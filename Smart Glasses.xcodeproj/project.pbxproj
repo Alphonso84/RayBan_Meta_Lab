@@ -6,6 +6,12 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		8948EAA12EE8A7990086B7D1 /* MWDATCamera in Frameworks */ = {isa = PBXBuildFile; productRef = 8948EAA02EE8A7990086B7D1 /* MWDATCamera */; };
+		8948EAA32EE8A7990086B7D1 /* MWDATCore in Frameworks */ = {isa = PBXBuildFile; productRef = 8948EAA22EE8A7990086B7D1 /* MWDATCore */; };
+		8948EAA52EE8A7990086B7D1 /* MWDATMockDevice in Frameworks */ = {isa = PBXBuildFile; productRef = 8948EAA42EE8A7990086B7D1 /* MWDATMockDevice */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		8948EA892EE8A23D0086B7D1 /* Smart Glasses.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Smart Glasses.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -23,6 +29,9 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				8948EAA12EE8A7990086B7D1 /* MWDATCamera in Frameworks */,
+				8948EAA52EE8A7990086B7D1 /* MWDATMockDevice in Frameworks */,
+				8948EAA32EE8A7990086B7D1 /* MWDATCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -65,6 +74,9 @@
 			);
 			name = "Smart Glasses";
 			packageProductDependencies = (
+				8948EAA02EE8A7990086B7D1 /* MWDATCamera */,
+				8948EAA22EE8A7990086B7D1 /* MWDATCore */,
+				8948EAA42EE8A7990086B7D1 /* MWDATMockDevice */,
 			);
 			productName = "Smart Glasses";
 			productReference = 8948EA892EE8A23D0086B7D1 /* Smart Glasses.app */;
@@ -94,6 +106,9 @@
 			);
 			mainGroup = 8948EA802EE8A23D0086B7D1;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				8948EA9F2EE8A7990086B7D1 /* XCRemoteSwiftPackageReference "meta-wearables-dat-ios" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 8948EA8A2EE8A23D0086B7D1 /* Products */;
 			projectDirPath = "";
@@ -256,6 +271,7 @@
 				DEVELOPMENT_TEAM = 6257XTCRBF;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Smart-Glasses-Info.plist";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -288,6 +304,7 @@
 				DEVELOPMENT_TEAM = 6257XTCRBF;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Smart-Glasses-Info.plist";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -332,6 +349,35 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		8948EA9F2EE8A7990086B7D1 /* XCRemoteSwiftPackageReference "meta-wearables-dat-ios" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/facebook/meta-wearables-dat-ios";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.2.1;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		8948EAA02EE8A7990086B7D1 /* MWDATCamera */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 8948EA9F2EE8A7990086B7D1 /* XCRemoteSwiftPackageReference "meta-wearables-dat-ios" */;
+			productName = MWDATCamera;
+		};
+		8948EAA22EE8A7990086B7D1 /* MWDATCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 8948EA9F2EE8A7990086B7D1 /* XCRemoteSwiftPackageReference "meta-wearables-dat-ios" */;
+			productName = MWDATCore;
+		};
+		8948EAA42EE8A7990086B7D1 /* MWDATMockDevice */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 8948EA9F2EE8A7990086B7D1 /* XCRemoteSwiftPackageReference "meta-wearables-dat-ios" */;
+			productName = MWDATMockDevice;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 8948EA812EE8A23D0086B7D1 /* Project object */;
 }
