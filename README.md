@@ -1,7 +1,6 @@
-# Smart Glasses
+# RayBan Meta Smartglasses Lab
 
-An iOS app for streaming live video from Meta Ray-Ban smart glasses to your iPhone.
-
+An iOS app for exploring the new SDK from Meta wearables on your iPhone
 ## What It Does
 
 This app connects to your Meta smart glasses over Bluetooth and lets you:
