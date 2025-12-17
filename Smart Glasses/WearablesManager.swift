@@ -12,6 +12,34 @@ import AVFoundation
 import MWDATCore
 import MWDATCamera
 
+// MARK: - Streaming Mode
+enum StreamingMode: String, CaseIterable, Identifiable {
+    case liveView = "Live View"
+    case objectDetection = "Object Detection"
+    case textReader = "Text Reader"
+    case aiAssistant = "AI Assistant"
+
+    var id: String { rawValue }
+
+    var icon: String {
+        switch self {
+        case .liveView: return "video.fill"
+        case .objectDetection: return "viewfinder"
+        case .textReader: return "doc.text.viewfinder"
+        case .aiAssistant: return "sparkles"
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .liveView: return "View live stream only"
+        case .objectDetection: return "Detect objects using Vision"
+        case .textReader: return "Read text with OCR"
+        case .aiAssistant: return "AI describes your view"
+        }
+    }
+}
+
 @MainActor
 class WearablesManager: ObservableObject {
     static let shared = WearablesManager()
@@ -25,6 +53,7 @@ class WearablesManager: ObservableObject {
     @Published var isRecording: Bool = false
     @Published var lastRecordedVideoURL: URL? = nil
     @Published var deviceStatus: String = "No device"
+    @Published var currentMode: StreamingMode = .liveView
 
     // MARK: - Private Properties
     private var registrationTask: Task<Void, Never>?
