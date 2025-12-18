@@ -15,159 +15,161 @@ struct FullScreenStreamView: View {
     @State private var hideControlsTask: Task<Void, Never>?
 
     var body: some View {
-        GeometryReader { geometry in
-            ZStack {
-                // Background
-                Color.black.ignoresSafeArea()
+        ZStack {
+            // Background + Video layer (ignores safe area)
+            Color.black
+                .ignoresSafeArea()
 
-                // Video feed (tap this area to toggle controls)
-                Group {
-                    if let frame = manager.latestFrameImage {
-                        Image(uiImage: frame)
-                            .resizable()
-                            .aspectRatio(contentMode: .fit)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else {
-                        VStack(spacing: 16) {
-                            Image(systemName: "video.slash")
-                                .font(.system(size: 60))
-                                .foregroundColor(.gray)
-                            Text("No video feed")
-                                .font(.headline)
-                                .foregroundColor(.gray)
-                            if manager.streamState == .stopped {
-                                Text("Start streaming to see video")
-                                    .font(.caption)
-                                    .foregroundColor(.gray.opacity(0.7))
-                            }
+            // Video feed
+            Group {
+                if let frame = manager.latestFrameImage {
+                    Image(uiImage: frame)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                } else {
+                    VStack(spacing: 16) {
+                        Image(systemName: "video.slash")
+                            .font(.system(size: 60))
+                            .foregroundColor(.gray)
+                        Text("No video feed")
+                            .font(.headline)
+                            .foregroundColor(.gray)
+                        if manager.streamState == .stopped {
+                            Text("Start streaming to see video")
+                                .font(.caption)
+                                .foregroundColor(.gray.opacity(0.7))
                         }
                     }
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        showControls.toggle()
-                    }
-                    resetHideControlsTimer()
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    showControls.toggle()
                 }
+                resetHideControlsTimer()
+            }
+            .ignoresSafeArea()
 
-                // Controls overlay
-                if showControls {
-                    VStack {
-                        // Top bar
-                        HStack {
-                            Button(action: { dismiss() }) {
-                                Image(systemName: "xmark.circle.fill")
-                                    .font(.system(size: 32))
-                                    .foregroundColor(.white)
-                                    .shadow(radius: 4)
-                            }
-                            .frame(width: 44, height: 44)
+            // Controls overlay (respects safe area for proper touch handling)
+            if showControls {
+                VStack {
+                    // Top bar
+                    HStack {
+                        Button {
+                            dismiss()
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 32))
+                                .foregroundColor(.white)
+                                .shadow(radius: 4)
+                        }
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
 
-                            Spacer()
+                        Spacer()
 
-                            // Stream state indicator
+                        // Stream state indicator
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(streamStateColor)
+                                .frame(width: 10, height: 10)
+                            Text(streamStateText)
+                                .font(.caption)
+                                .fontWeight(.medium)
+                                .foregroundColor(.white)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(.ultraThinMaterial)
+                        .clipShape(Capsule())
+
+                        Spacer()
+
+                        // Recording indicator (or placeholder for alignment)
+                        if manager.isRecording {
                             HStack(spacing: 6) {
                                 Circle()
-                                    .fill(streamStateColor)
+                                    .fill(.red)
                                     .frame(width: 10, height: 10)
-                                Text(streamStateText)
+                                Text("REC")
                                     .font(.caption)
-                                    .fontWeight(.medium)
+                                    .fontWeight(.bold)
                                     .foregroundColor(.white)
                             }
                             .padding(.horizontal, 12)
                             .padding(.vertical, 6)
-                            .background(.ultraThinMaterial)
+                            .background(.red.opacity(0.3))
                             .clipShape(Capsule())
-
-                            Spacer()
-
-                            // Recording indicator (or placeholder for alignment)
-                            if manager.isRecording {
-                                HStack(spacing: 6) {
-                                    Circle()
-                                        .fill(.red)
-                                        .frame(width: 10, height: 10)
-                                    Text("REC")
-                                        .font(.caption)
-                                        .fontWeight(.bold)
-                                        .foregroundColor(.white)
-                                }
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 6)
-                                .background(.red.opacity(0.3))
-                                .clipShape(Capsule())
-                            } else {
-                                Color.clear.frame(width: 44, height: 44)
-                            }
+                        } else {
+                            Color.clear.frame(width: 44, height: 44)
                         }
-                        .padding(.horizontal)
-                        .padding(.top, geometry.safeAreaInsets.top + 8)
-
-                        Spacer()
-
-                        // Bottom controls
-                        VStack(spacing: 16) {
-                            // Mode picker
-                            ModePicker(selectedMode: $manager.currentMode)
-                                .padding(.horizontal)
-
-                            // Action buttons
-                            HStack(spacing: 40) {
-                                // Capture photo
-                                ActionButton(
-                                    icon: "camera.fill",
-                                    label: "Photo",
-                                    disabled: manager.streamState != .streaming
-                                ) {
-                                    manager.capturePhoto()
-                                }
-
-                                // Start/Stop stream
-                                ActionButton(
-                                    icon: manager.streamState == .streaming ? "stop.fill" : "play.fill",
-                                    label: manager.streamState == .streaming ? "Stop" : "Start",
-                                    isActive: manager.streamState == .streaming
-                                ) {
-                                    if manager.streamState == .streaming {
-                                        manager.stopStream()
-                                    } else {
-                                        manager.startStream()
-                                    }
-                                }
-
-                                // Record video
-                                ActionButton(
-                                    icon: manager.isRecording ? "record.circle.fill" : "record.circle",
-                                    label: manager.isRecording ? "Stop Rec" : "Record",
-                                    isActive: manager.isRecording,
-                                    disabled: manager.streamState != .streaming
-                                ) {
-                                    if manager.isRecording {
-                                        manager.stopRecording()
-                                    } else {
-                                        manager.startRecording()
-                                    }
-                                }
-                            }
-                            .padding(.bottom, geometry.safeAreaInsets.bottom > 0 ? 0 : 16)
-                        }
-                        .padding()
-                        .background(
-                            LinearGradient(
-                                colors: [.clear, .black.opacity(0.7)],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                        )
                     }
-                    .transition(.opacity)
+                    .padding(.horizontal)
+                    .padding(.top, 8)
+
+                    Spacer()
+
+                    // Bottom controls
+                    VStack(spacing: 16) {
+                        // Mode picker
+                        ModePicker(selectedMode: $manager.currentMode)
+                            .padding(.horizontal)
+
+                        // Action buttons
+                        HStack(spacing: 40) {
+                            // Capture photo
+                            ActionButton(
+                                icon: "camera.fill",
+                                label: "Photo",
+                                disabled: manager.streamState != .streaming
+                            ) {
+                                manager.capturePhoto()
+                            }
+
+                            // Start/Stop stream
+                            ActionButton(
+                                icon: manager.streamState == .streaming ? "stop.fill" : "play.fill",
+                                label: manager.streamState == .streaming ? "Stop" : "Start",
+                                isActive: manager.streamState == .streaming
+                            ) {
+                                if manager.streamState == .streaming {
+                                    manager.stopStream()
+                                } else {
+                                    manager.startStream()
+                                }
+                            }
+
+                            // Record video
+                            ActionButton(
+                                icon: manager.isRecording ? "record.circle.fill" : "record.circle",
+                                label: manager.isRecording ? "Stop Rec" : "Record",
+                                isActive: manager.isRecording,
+                                disabled: manager.streamState != .streaming
+                            ) {
+                                if manager.isRecording {
+                                    manager.stopRecording()
+                                } else {
+                                    manager.startRecording()
+                                }
+                            }
+                        }
+                    }
+                    .padding()
+                    .padding(.bottom, 8)
+                    .background(
+                        LinearGradient(
+                            colors: [.clear, .black.opacity(0.7)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                        .ignoresSafeArea(edges: .bottom)
+                    )
                 }
+                .transition(.opacity)
             }
         }
-        .ignoresSafeArea()
         .statusBar(hidden: !showControls)
         .onAppear {
             resetHideControlsTimer()
