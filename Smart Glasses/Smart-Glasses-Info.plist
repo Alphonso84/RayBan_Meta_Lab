@@ -30,6 +30,8 @@
 	</array>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Needed to connect to Meta Wearables</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Save photos captured from your smart glasses to your photo library</string>
 	<key>MWDAT</key>
 	<dict>
 		<key>AppLinkURLScheme</key>

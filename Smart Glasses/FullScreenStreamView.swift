@@ -10,9 +10,12 @@ import MWDATCamera
 
 struct FullScreenStreamView: View {
     @ObservedObject var manager: WearablesManager
+    @StateObject private var voiceFeedback = VoiceFeedbackManager.shared
+    @StateObject private var externalDisplay = ExternalDisplayManager.shared
     @Environment(\.dismiss) private var dismiss
     @State private var showControls = true
     @State private var hideControlsTask: Task<Void, Never>?
+    @State private var showMirroringInstructions = false
 
     var body: some View {
         ZStack {
@@ -52,6 +55,29 @@ struct FullScreenStreamView: View {
             }
             .ignoresSafeArea()
 
+            // Detection overlay (when in object detection mode)
+            if manager.currentMode == .objectDetection {
+                DetectionOverlayView(
+                    result: manager.latestDetectionResult,
+                    focusArea: .center,
+                    showFocusArea: showControls
+                )
+                .ignoresSafeArea()
+            }
+
+            // Processing indicator
+            if manager.isDetectionProcessing && manager.currentMode == .objectDetection {
+                VStack {
+                    HStack {
+                        Spacer()
+                        ProcessingIndicator(isProcessing: true)
+                            .padding(.trailing, 16)
+                    }
+                    Spacer()
+                }
+                .padding(.top, 60)
+            }
+
             // Controls overlay (respects safe area for proper touch handling)
             if showControls {
                 VStack {
@@ -67,6 +93,16 @@ struct FullScreenStreamView: View {
                         }
                         .frame(width: 44, height: 44)
                         .contentShape(Rectangle())
+
+                        // Screen Mirroring button
+                        Button {
+                            showMirroringInstructions = true
+                        } label: {
+                            Image(systemName: "tv")
+                                .font(.system(size: 20))
+                                .foregroundColor(.white)
+                                .frame(width: 44, height: 44)
+                        }
 
                         Spacer()
 
@@ -85,9 +121,29 @@ struct FullScreenStreamView: View {
                         .background(.ultraThinMaterial)
                         .clipShape(Capsule())
 
+                        // External display indicator
+                        if externalDisplay.isExternalDisplayConnected {
+                            Button {
+                                externalDisplay.toggleOverlays()
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "tv.fill")
+                                        .font(.caption)
+                                    Text("Projector")
+                                        .font(.caption)
+                                        .fontWeight(.medium)
+                                }
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(Color.purple.opacity(0.8))
+                                .clipShape(Capsule())
+                            }
+                        }
+
                         Spacer()
 
-                        // Recording indicator (or placeholder for alignment)
+                        // Recording indicator or photo save status
                         if manager.isRecording {
                             HStack(spacing: 6) {
                                 Circle()
@@ -102,6 +158,20 @@ struct FullScreenStreamView: View {
                             .padding(.vertical, 6)
                             .background(.red.opacity(0.3))
                             .clipShape(Capsule())
+                        } else if let photoStatus = manager.photoSaveStatus {
+                            HStack(spacing: 6) {
+                                Image(systemName: photoStatus.contains("Saved") ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                                    .font(.caption)
+                                Text(photoStatus)
+                                    .font(.caption)
+                                    .fontWeight(.medium)
+                            }
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(photoStatus.contains("Saved") ? Color.green.opacity(0.8) : Color.orange.opacity(0.8))
+                            .clipShape(Capsule())
+                            .transition(.opacity.combined(with: .scale))
                         } else {
                             Color.clear.frame(width: 44, height: 44)
                         }
@@ -110,6 +180,35 @@ struct FullScreenStreamView: View {
                     .padding(.top, 8)
 
                     Spacer()
+
+                    // Describe button and audio status (only in object detection mode)
+                    if manager.currentMode == .objectDetection {
+                        VStack(spacing: 8) {
+                            // Audio route indicator
+                            HStack(spacing: 6) {
+                                Image(systemName: voiceFeedback.isBluetoothConnected ? "airpodspro" : "speaker.wave.2")
+                                    .font(.caption)
+                                Text(voiceFeedback.audioOutputRoute)
+                                    .font(.caption2)
+                            }
+                            .foregroundColor(voiceFeedback.isBluetoothConnected ? .green : .yellow)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(.ultraThinMaterial)
+                            .clipShape(Capsule())
+                            .onTapGesture {
+                                // Test audio on tap
+                                voiceFeedback.speak("Audio test")
+                            }
+
+                            DescribeButton(
+                                result: manager.latestDetectionResult,
+                                voiceFeedback: voiceFeedback,
+                                isStreaming: manager.streamState == .streaming
+                            )
+                        }
+                        .padding(.bottom, 16)
+                    }
 
                     // Bottom controls
                     VStack(spacing: 16) {
@@ -176,6 +275,9 @@ struct FullScreenStreamView: View {
         }
         .onDisappear {
             hideControlsTask?.cancel()
+        }
+        .sheet(isPresented: $showMirroringInstructions) {
+            ScreenMirroringInstructionsView()
         }
     }
 
@@ -275,6 +377,113 @@ struct ActionButton: View {
             }
         }
         .disabled(disabled)
+    }
+}
+
+// MARK: - Screen Mirroring Instructions
+struct ScreenMirroringInstructionsView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 24) {
+                // Icon
+                Image(systemName: "tv.and.mediabox")
+                    .font(.system(size: 60))
+                    .foregroundColor(.blue)
+                    .padding(.top, 20)
+
+                Text("Mirror to Projector")
+                    .font(.title)
+                    .fontWeight(.bold)
+
+                Text("To display video on your projector or TV, use Screen Mirroring from Control Center.")
+                    .font(.body)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+
+                // Steps
+                VStack(alignment: .leading, spacing: 16) {
+                    InstructionStep(number: 1, text: "Swipe down from the top-right corner to open Control Center")
+                    InstructionStep(number: 2, text: "Tap the Screen Mirroring button", icon: "rectangle.on.rectangle")
+                    InstructionStep(number: 3, text: "Select your Apple TV or AirPlay device")
+                    InstructionStep(number: 4, text: "Your entire screen will mirror to the display")
+                }
+                .padding()
+                .background(Color(.systemGray6))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .padding(.horizontal)
+
+                Spacer()
+
+                // Tip
+                HStack {
+                    Image(systemName: "lightbulb.fill")
+                        .foregroundColor(.yellow)
+                    Text("Tip: Use a Lightning/USB-C to HDMI adapter for a dedicated projector view with controls on your phone.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .padding()
+                .background(Color(.systemGray6))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .padding(.horizontal)
+
+                Button {
+                    dismiss()
+                } label: {
+                    Text("Got It")
+                        .fontWeight(.semibold)
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(Color.blue)
+                        .foregroundColor(.white)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
+                .padding(.horizontal)
+                .padding(.bottom)
+            }
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.gray)
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct InstructionStep: View {
+    let number: Int
+    let text: String
+    var icon: String? = nil
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text("\(number)")
+                .font(.caption)
+                .fontWeight(.bold)
+                .foregroundColor(.white)
+                .frame(width: 24, height: 24)
+                .background(Color.blue)
+                .clipShape(Circle())
+
+            HStack(spacing: 6) {
+                Text(text)
+                    .font(.subheadline)
+                if let icon = icon {
+                    Image(systemName: icon)
+                        .font(.subheadline)
+                        .foregroundColor(.blue)
+                }
+            }
+        }
     }
 }
 

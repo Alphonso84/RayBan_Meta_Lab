@@ -9,6 +9,8 @@ import Foundation
 import SwiftUI
 import Combine
 import AVFoundation
+import Vision
+import Photos
 import MWDATCore
 import MWDATCamera
 
@@ -54,6 +56,14 @@ class WearablesManager: ObservableObject {
     @Published var lastRecordedVideoURL: URL? = nil
     @Published var deviceStatus: String = "No device"
     @Published var currentMode: StreamingMode = .liveView
+    @Published var photoSaveStatus: String? = nil
+
+    // MARK: - Object Detection
+    @Published var latestDetectionResult: DetectionResult?
+    @Published var isDetectionProcessing: Bool = false
+
+    /// Object detection processor instance
+    let objectDetectionProcessor = ObjectDetectionProcessor()
 
     // MARK: - Private Properties
     private var registrationTask: Task<Void, Never>?
@@ -70,12 +80,34 @@ class WearablesManager: ObservableObject {
     private var assetWriterInput: AVAssetWriterInput?
     private var recordingStartTime: CMTime?
 
+    // Combine subscriptions
+    private var detectionResultCancellable: AnyCancellable?
+    private var detectionProcessingCancellable: AnyCancellable?
+
     private init() {
         deviceSelector = AutoDeviceSelector(wearables: Wearables.shared)
+        setupDetectionSubscriptions()
         Task {
             await refreshRegistrationState()
             await monitorDevices()
         }
+    }
+
+    /// Set up Combine subscriptions for object detection results
+    private func setupDetectionSubscriptions() {
+        // Subscribe to detection results
+        detectionResultCancellable = objectDetectionProcessor.$latestResult
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] result in
+                self?.latestDetectionResult = result
+            }
+
+        // Subscribe to processing state
+        detectionProcessingCancellable = objectDetectionProcessor.$isProcessing
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] isProcessing in
+                self?.isDetectionProcessing = isProcessing
+            }
     }
 
     private func monitorDevices() async {
@@ -194,6 +226,8 @@ class WearablesManager: ObservableObject {
             Task { @MainActor in
                 if let image = UIImage(data: photoData.data) {
                     self.lastCapturedPhoto = image
+                    // Save to camera roll
+                    self.savePhotoToCameraRoll(image)
                 }
             }
         }
@@ -228,6 +262,9 @@ class WearablesManager: ObservableObject {
         streamSession = nil
         streamState = .stopped
         latestFrameImage = nil
+
+        // Reset detection state
+        resetDetection()
     }
 
     // MARK: - Photo Capture
@@ -237,9 +274,58 @@ class WearablesManager: ObservableObject {
             return
         }
 
+        photoSaveStatus = nil  // Reset status
         let success = session.capturePhoto(format: .jpeg)
         if !success {
             print("Failed to initiate photo capture")
+            photoSaveStatus = "Failed to capture"
+        }
+    }
+
+    /// Save a photo to the camera roll
+    private func savePhotoToCameraRoll(_ image: UIImage) {
+        PHPhotoLibrary.requestAuthorization(for: .addOnly) { [weak self] status in
+            Task { @MainActor in
+                guard let self = self else { return }
+
+                switch status {
+                case .authorized, .limited:
+                    self.performSavePhoto(image)
+                case .denied, .restricted:
+                    self.photoSaveStatus = "Photo access denied"
+                    print("Photo library access denied")
+                case .notDetermined:
+                    self.photoSaveStatus = "Permission not determined"
+                @unknown default:
+                    self.photoSaveStatus = "Unknown permission status"
+                }
+            }
+        }
+    }
+
+    private func performSavePhoto(_ image: UIImage) {
+        PHPhotoLibrary.shared().performChanges {
+            let request = PHAssetCreationRequest.forAsset()
+            request.addResource(with: .photo, data: image.jpegData(compressionQuality: 0.9)!, options: nil)
+            request.creationDate = Date()
+        } completionHandler: { [weak self] success, error in
+            Task { @MainActor in
+                guard let self = self else { return }
+
+                if success {
+                    self.photoSaveStatus = "Saved to Photos"
+                    print("Photo saved to camera roll")
+
+                    // Clear status after 2 seconds
+                    Task {
+                        try? await Task.sleep(nanoseconds: 2_000_000_000)
+                        self.photoSaveStatus = nil
+                    }
+                } else {
+                    self.photoSaveStatus = "Failed to save"
+                    print("Failed to save photo: \(error?.localizedDescription ?? "unknown error")")
+                }
+            }
         }
     }
 
@@ -316,6 +402,14 @@ class WearablesManager: ObservableObject {
     }
 
     private func handleVideoFrame(_ frame: VideoFrame) {
+        let sampleBuffer = frame.sampleBuffer
+
+        // Process for object detection if in that mode
+        if currentMode == .objectDetection {
+            objectDetectionProcessor.processFrame(sampleBuffer)
+        }
+
+        // Handle recording separately (can record while detecting)
         guard isRecording,
               let writer = assetWriter,
               let input = assetWriterInput,
@@ -324,7 +418,6 @@ class WearablesManager: ObservableObject {
             return
         }
 
-        let sampleBuffer = frame.sampleBuffer
         let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
 
         // Start the session on first frame
@@ -334,5 +427,11 @@ class WearablesManager: ObservableObject {
         }
 
         input.append(sampleBuffer)
+    }
+
+    /// Reset object detection state
+    func resetDetection() {
+        objectDetectionProcessor.reset()
+        latestDetectionResult = nil
     }
 }
