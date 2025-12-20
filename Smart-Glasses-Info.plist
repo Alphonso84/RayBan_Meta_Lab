@@ -25,11 +25,14 @@
 	</array>
 	<key>UIBackgroundModes</key>
 	<array>
+		<string>audio</string>
 		<string>bluetooth-peripheral</string>
 		<string>external-accessory</string>
 	</array>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Needed to connect to Meta Wearables</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Needed to talk with the AI Assistant</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Save photos captured from your smart glasses to your photo library</string>
 	<key>MWDAT</key>

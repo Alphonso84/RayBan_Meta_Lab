@@ -83,14 +83,62 @@ class WearablesManager: ObservableObject {
     // Combine subscriptions
     private var detectionResultCancellable: AnyCancellable?
     private var detectionProcessingCancellable: AnyCancellable?
+    private var modeCancellable: AnyCancellable?
+    private var streamStateCancellable: AnyCancellable?
+
+    /// Gemini Live manager for AI Assistant mode
+    let geminiLiveManager = GeminiLiveManager.shared
 
     private init() {
         deviceSelector = AutoDeviceSelector(wearables: Wearables.shared)
         setupDetectionSubscriptions()
+        setupModeChangeObserver()
+        setupStreamStateObserver()
         Task {
             await refreshRegistrationState()
             await monitorDevices()
         }
+    }
+
+    /// Set up observer for mode changes to auto-start/stop Gemini
+    private func setupModeChangeObserver() {
+        modeCancellable = $currentMode
+            .dropFirst()  // Skip initial value
+            .sink { [weak self] newMode in
+                guard let self = self else { return }
+
+                Task { @MainActor in
+                    if newMode == .aiAssistant {
+                        // Start Gemini session when entering AI Assistant mode
+                        if self.streamState == .streaming {
+                            self.geminiLiveManager.startSession()
+                        }
+                    } else {
+                        // End session when leaving AI Assistant mode
+                        self.geminiLiveManager.endSession()
+                    }
+                }
+            }
+    }
+
+    /// Set up observer for stream state changes
+    private func setupStreamStateObserver() {
+        streamStateCancellable = $streamState
+            .sink { [weak self] state in
+                guard let self = self, self.currentMode == .aiAssistant else { return }
+
+                Task { @MainActor in
+                    if state == .streaming {
+                        // Auto-start Gemini when stream becomes active in AI mode
+                        if self.geminiLiveManager.state == .disconnected {
+                            self.geminiLiveManager.startSession()
+                        }
+                    } else if state == .stopped {
+                        // End session when streaming stops
+                        self.geminiLiveManager.endSession()
+                    }
+                }
+            }
     }
 
     /// Set up Combine subscriptions for object detection results
@@ -407,6 +455,11 @@ class WearablesManager: ObservableObject {
         // Process for object detection if in that mode
         if currentMode == .objectDetection {
             objectDetectionProcessor.processFrame(sampleBuffer)
+        }
+
+        // Process for AI Assistant mode (Gemini Live)
+        if currentMode == .aiAssistant {
+            geminiLiveManager.processFrame(sampleBuffer)
         }
 
         // Handle recording separately (can record while detecting)

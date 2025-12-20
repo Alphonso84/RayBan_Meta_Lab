@@ -65,6 +65,15 @@ struct FullScreenStreamView: View {
                 .ignoresSafeArea()
             }
 
+            // AI Assistant overlay (when in AI Assistant mode)
+            if manager.currentMode == .aiAssistant {
+                AIAssistantOverlayView(
+                    geminiManager: manager.geminiLiveManager,
+                    wearablesManager: manager
+                )
+                .ignoresSafeArea()
+            }
+
             // Processing indicator
             if manager.isDetectionProcessing && manager.currentMode == .objectDetection {
                 VStack {
