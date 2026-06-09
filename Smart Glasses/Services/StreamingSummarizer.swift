@@ -13,20 +13,55 @@ import SwiftUI
 import FoundationModels
 #endif
 
-/// Structured summary output for documents
+#if canImport(FoundationModels)
+
+/// Structured summary output for documents.
+/// Marked `@Generable` so Foundation Models produces it directly via guided
+/// generation — no string/JSON parsing required.
+@Generable
 struct DocumentSummaryOutput: Codable, Sendable {
-    /// A concise 1-3 sentence summary
+    @Guide(description: "A concise 1-3 sentence summary of the document, written like college study notes.")
     var summary: String
 
-    /// 3-5 key points as bullet points
+    @Guide(description: "3 to 5 short key points capturing the most important information for learning the topic.")
     var keyPoints: [String]
 
-    /// Auto-generated title for the card
+    @Guide(description: "A short, descriptive title for the document based on its key points.")
     var suggestedTitle: String
 
-    /// Document type classification
+    @Guide(description: "The document type, such as article, letter, receipt, manual, book page, or notes.")
+    var documentType: String
+
+    init(summary: String, keyPoints: [String], suggestedTitle: String, documentType: String) {
+        self.summary = summary
+        self.keyPoints = keyPoints
+        self.suggestedTitle = suggestedTitle
+        self.documentType = documentType
+    }
+}
+
+/// Model-generated portion of a deck summary. `cardCount` is supplied by the
+/// app (not the model), so it lives on `DeckSummaryOutput` rather than here.
+@Generable
+struct GeneratedDeckSummary {
+    @Guide(description: "A comprehensive 3-5 sentence overview synthesizing the main content across all cards.")
+    var summary: String
+
+    @Guide(description: "4 to 6 key themes or important points that span multiple cards.")
+    var keyThemes: [String]
+}
+
+#else
+
+/// Structured summary output for documents
+struct DocumentSummaryOutput: Codable, Sendable {
+    var summary: String
+    var keyPoints: [String]
+    var suggestedTitle: String
     var documentType: String
 }
+
+#endif
 
 /// Structured summary output for deck aggregation
 struct DeckSummaryOutput: Codable, Sendable {
@@ -193,31 +228,27 @@ class StreamingSummarizer: ObservableObject {
         """
 
         do {
-            // Use streaming for real-time updates
-            var fullResponse = ""
-            let stream = session.streamResponse(to: prompt)
+            // Guided generation: the model emits a DocumentSummaryOutput directly,
+            // streaming partial snapshots whose fields fill in as tokens arrive.
+            let stream = session.streamResponse(to: prompt, generating: DocumentSummaryOutput.self)
 
-            for try await partialResponse in stream {
-                fullResponse = partialResponse.content
+            for try await partial in stream {
+                let snapshot = partial.content
+                if let summary = snapshot.summary { streamingSummary = summary }
+                if let keyPoints = snapshot.keyPoints { streamingKeyPoints = keyPoints }
+                if let title = snapshot.suggestedTitle, !title.isEmpty { suggestedTitle = title }
+                if let type = snapshot.documentType, !type.isEmpty { documentType = type }
                 progress = min(0.9, progress + 0.05)
-
-                // Parse partial response and update UI in real-time
-                let partialOutput = parseResponse(fullResponse, originalText: text)
-                streamingSummary = partialOutput.summary
-                streamingKeyPoints = partialOutput.keyPoints
-                // Only update title if we have a valid non-empty title
-                if !partialOutput.suggestedTitle.isEmpty {
-                    suggestedTitle = partialOutput.suggestedTitle
-                }
-                if !partialOutput.documentType.isEmpty && partialOutput.documentType != "Document" {
-                    documentType = partialOutput.documentType
-                } else if documentType.isEmpty {
-                    documentType = partialOutput.documentType
-                }
             }
 
-            // Final parse
-            let output = parseResponse(fullResponse, originalText: text)
+            // Build the final value from streamed fields, with text-derived
+            // fallbacks for anything the model left empty.
+            let output = DocumentSummaryOutput(
+                summary: streamingSummary.isEmpty ? createSimpleSummary(from: text) : streamingSummary,
+                keyPoints: streamingKeyPoints.isEmpty ? extractKeyPoints(from: text) : streamingKeyPoints,
+                suggestedTitle: suggestedTitle.isEmpty ? createTitle(from: text) : suggestedTitle,
+                documentType: documentType.isEmpty ? "Document" : documentType
+            )
             streamingSummary = output.summary
             streamingKeyPoints = output.keyPoints
             suggestedTitle = output.suggestedTitle
@@ -402,19 +433,22 @@ class StreamingSummarizer: ObservableObject {
         """
 
         do {
-            var fullResponse = ""
-            let stream = deckSession.streamResponse(to: prompt)
+            let stream = deckSession.streamResponse(to: prompt, generating: GeneratedDeckSummary.self)
 
-            for try await partialResponse in stream {
-                fullResponse = partialResponse.content
+            for try await partial in stream {
+                let snapshot = partial.content
+                if let summary = snapshot.summary { streamingSummary = summary }
+                if let themes = snapshot.keyThemes { streamingKeyPoints = themes }
                 progress = min(0.9, progress + 0.03)
-
-                let partialOutput = parseDeckResponse(fullResponse, cardCount: cardCount)
-                streamingSummary = partialOutput.summary
-                streamingKeyPoints = partialOutput.keyThemes
             }
 
-            let output = parseDeckResponse(fullResponse, cardCount: cardCount)
+            let output = DeckSummaryOutput(
+                summary: streamingSummary.isEmpty
+                    ? "This deck contains \(cardCount) cards with study material."
+                    : streamingSummary,
+                keyThemes: streamingKeyPoints,
+                cardCount: cardCount
+            )
             streamingSummary = output.summary
             streamingKeyPoints = output.keyThemes
             progress = 1.0
@@ -511,19 +545,22 @@ class StreamingSummarizer: ObservableObject {
         progress = 0.75
 
         do {
-            var fullResponse = ""
-            let stream = finalSession.streamResponse(to: finalPrompt)
+            let stream = finalSession.streamResponse(to: finalPrompt, generating: GeneratedDeckSummary.self)
 
-            for try await partialResponse in stream {
-                fullResponse = partialResponse.content
+            for try await partial in stream {
+                let snapshot = partial.content
+                if let summary = snapshot.summary { streamingSummary = summary }
+                if let themes = snapshot.keyThemes { streamingKeyPoints = themes }
                 progress = 0.75 + min(0.24, (progress - 0.75) + 0.03)
-
-                let partialOutput = parseDeckResponse(fullResponse, cardCount: cardCount)
-                streamingSummary = partialOutput.summary
-                streamingKeyPoints = partialOutput.keyThemes
             }
 
-            let output = parseDeckResponse(fullResponse, cardCount: cardCount)
+            let output = DeckSummaryOutput(
+                summary: streamingSummary.isEmpty
+                    ? "This deck contains \(cardCount) cards with study material."
+                    : streamingSummary,
+                keyThemes: streamingKeyPoints,
+                cardCount: cardCount
+            )
             streamingSummary = output.summary
             streamingKeyPoints = output.keyThemes
             progress = 1.0
@@ -553,57 +590,6 @@ class StreamingSummarizer: ObservableObject {
                 }
             }
         return chunks.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-    }
-    #endif
-
-    #if canImport(FoundationModels)
-    /// Parse deck summary response
-    private func parseDeckResponse(_ content: String, cardCount: Int) -> DeckSummaryOutput {
-        let lines = content.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
-
-        var summary = ""
-        var keyThemes: [String] = []
-        var currentSection = ""
-
-        for line in lines {
-            let cleanedLine = stripMarkdownFormatting(line)
-            if cleanedLine.isEmpty { continue }
-
-            let lowercased = cleanedLine.lowercased()
-
-            if lowercased.contains("overview:") || lowercased.contains("summary:") ||
-               (lowercased.contains("overview") && cleanedLine.contains(":")) {
-                currentSection = "summary"
-                let parts = cleanedLine.components(separatedBy: ":")
-                if parts.count > 1 {
-                    summary = stripMarkdownFormatting(parts.dropFirst().joined(separator: ":"))
-                }
-            } else if lowercased.contains("theme") || lowercased.contains("key point") {
-                currentSection = "themes"
-            } else if line.hasPrefix("-") || line.hasPrefix("•") || (line.hasPrefix("*") && !line.hasPrefix("**")) {
-                let theme = stripMarkdownFormatting(String(line.dropFirst()))
-                if !theme.isEmpty && theme != "*" {
-                    keyThemes.append(theme)
-                }
-            } else if currentSection == "summary" && !cleanedLine.isEmpty {
-                if summary.isEmpty {
-                    summary = cleanedLine
-                } else {
-                    summary += " " + cleanedLine
-                }
-            }
-        }
-
-        // Fallback if parsing failed
-        if summary.isEmpty {
-            summary = "This deck contains \(cardCount) cards with study material."
-        }
-
-        return DeckSummaryOutput(
-            summary: stripMarkdownFormatting(summary),
-            keyThemes: keyThemes.map { stripMarkdownFormatting($0) },
-            cardCount: cardCount
-        )
     }
     #endif
 
@@ -705,118 +691,6 @@ class StreamingSummarizer: ObservableObject {
     }
 
     // MARK: - Private Methods
-
-    #if canImport(FoundationModels)
-    /// Parse the model response into structured output
-    private func parseResponse(_ content: String, originalText: String) -> DocumentSummaryOutput {
-        // Simple parsing - in production you'd use structured generation
-        let lines = content.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
-
-        var summary = ""
-        var keyPoints: [String] = []
-        var title = ""
-        var docType = "Document"
-
-        var currentSection = ""
-
-        for line in lines {
-            // Skip empty lines or lines that are just markdown formatting
-            let cleanedLine = stripMarkdownFormatting(line)
-            if cleanedLine.isEmpty {
-                continue
-            }
-
-            let lowercased = cleanedLine.lowercased()
-
-            if lowercased.contains("summary:") || (lowercased.contains("summary") && cleanedLine.contains(":")) {
-                currentSection = "summary"
-                let parts = cleanedLine.components(separatedBy: ":")
-                if parts.count > 1 {
-                    summary = stripMarkdownFormatting(parts.dropFirst().joined(separator: ":"))
-                }
-            } else if lowercased.contains("key point") || lowercased.contains("bullet") {
-                currentSection = "keypoints"
-            } else if lowercased.contains("title:") || lowercased.contains("suggested title") {
-                currentSection = "title"
-                let parts = cleanedLine.components(separatedBy: ":")
-                if parts.count > 1 {
-                    let rawTitle = parts.dropFirst().joined(separator: ":")
-                    title = stripMarkdownFormatting(rawTitle)
-                }
-            } else if lowercased.contains("type:") || lowercased.contains("document type") {
-                currentSection = "type"
-                let parts = cleanedLine.components(separatedBy: ":")
-                if parts.count > 1 {
-                    docType = stripMarkdownFormatting(parts.dropFirst().joined(separator: ":"))
-                }
-            } else if line.hasPrefix("-") || line.hasPrefix("•") || (line.hasPrefix("*") && !line.hasPrefix("**")) {
-                // Bullet point - but not markdown bold
-                let point = stripMarkdownFormatting(String(line.dropFirst()))
-                if !point.isEmpty && point != "*" {
-                    keyPoints.append(point)
-                }
-            } else if line.hasPrefix("**") && line.hasSuffix("**") {
-                // This is just a markdown header/bold text, skip it
-                continue
-            } else if currentSection == "summary" && !cleanedLine.isEmpty && summary.isEmpty {
-                summary = cleanedLine
-            } else if currentSection == "summary" && !cleanedLine.isEmpty {
-                summary += " " + cleanedLine
-            } else if currentSection == "title" && title.isEmpty && !cleanedLine.isEmpty {
-                title = cleanedLine
-            }
-        }
-
-        // Fallbacks if parsing failed
-        if summary.isEmpty {
-            summary = createSimpleSummary(from: originalText)
-        }
-        if title.isEmpty {
-            title = createTitle(from: originalText)
-        }
-        if keyPoints.isEmpty {
-            keyPoints = extractKeyPoints(from: originalText)
-        }
-
-        // Clean up any remaining markdown in final output
-        summary = stripMarkdownFormatting(summary)
-        title = stripMarkdownFormatting(title)
-        docType = stripMarkdownFormatting(docType)
-        keyPoints = keyPoints.map { stripMarkdownFormatting($0) }
-
-        return DocumentSummaryOutput(
-            summary: summary,
-            keyPoints: keyPoints,
-            suggestedTitle: title,
-            documentType: docType
-        )
-    }
-
-    /// Strip markdown formatting characters from text
-    private func stripMarkdownFormatting(_ text: String) -> String {
-        var result = text.trimmingCharacters(in: .whitespaces)
-
-        // Remove bold/italic markers
-        result = result.replacingOccurrences(of: "**", with: "")
-        result = result.replacingOccurrences(of: "__", with: "")
-        result = result.replacingOccurrences(of: "~~", with: "")
-
-        // Remove single asterisks/underscores at start and end (italic)
-        if result.hasPrefix("*") && result.hasSuffix("*") && result.count > 2 {
-            result = String(result.dropFirst().dropLast())
-        }
-        if result.hasPrefix("_") && result.hasSuffix("_") && result.count > 2 {
-            result = String(result.dropFirst().dropLast())
-        }
-
-        // Remove markdown headers
-        while result.hasPrefix("#") {
-            result = String(result.dropFirst())
-        }
-
-        return result.trimmingCharacters(in: .whitespaces)
-    }
-    #endif
 
     /// Create a fallback summary when Foundation Models unavailable
     private func createFallbackSummary(from text: String) -> DocumentSummaryOutput {

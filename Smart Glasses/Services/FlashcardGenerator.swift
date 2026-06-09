@@ -11,6 +11,28 @@ import SwiftUI
 
 #if canImport(FoundationModels)
 import FoundationModels
+
+/// Guided-generation schema for a set of flashcards produced by Foundation Models.
+@Generable
+private struct GeneratedFlashcardSet {
+    @Guide(description: "The generated flashcards.")
+    var flashcards: [GeneratedFlashcard]
+}
+
+@Generable
+private struct GeneratedFlashcard {
+    @Guide(description: "A concise question or term for the front of the card.")
+    var front: String
+
+    @Guide(description: "A complete but brief answer or explanation for the back.")
+    var back: String
+
+    @Guide(description: "The title of the source card this flashcard is based on.")
+    var sourceCard: String
+
+    @Guide(description: "A short category for grouping, or an empty string if none applies.")
+    var category: String
+}
 #endif
 
 @MainActor
@@ -117,10 +139,10 @@ class FlashcardGenerator: ObservableObject {
         }
 
         let session = LanguageModelSession(instructions: """
-            You are a flashcard generator for study material. Generate flashcards with a term/question on the front and answer/explanation on the back.
-            Each flashcard should test one concept clearly.
-            Respond with ONLY a JSON array, no other text:
-            [{"front": "Question or term", "back": "Answer or explanation", "sourceCard": "card title", "category": "optional category"}]
+            You are a flashcard generator for study material. Each flashcard has a term or
+            question on the front and a complete but brief answer or explanation on the back,
+            and should test one concept clearly. Cover the most important concepts and vary
+            between definition, concept, and application questions.
             """)
 
         let prompt = """
@@ -131,20 +153,14 @@ class FlashcardGenerator: ObservableObject {
         ---
         \(text)
         ---
-
-        Create flashcards that:
-        - Have clear, concise questions or terms on the front
-        - Have complete but brief answers on the back
-        - Cover the most important concepts from the material
-        - Vary between definition, concept, and application questions
         """
 
         do {
             progress = 0.4
-            let response = try await session.respond(to: prompt)
+            let response = try await session.respond(to: prompt, generating: GeneratedFlashcardSet.self)
             progress = 0.8
 
-            let parsed = parseFlashcardJSON(response.content, fallbackTitles: cardTitles)
+            let parsed = mapGeneratedFlashcards(response.content.flashcards, fallbackTitles: cardTitles)
 
             if parsed.isEmpty {
                 flashcards = generateFallbackFlashcards(cardTitles: cardTitles, text: text, count: count)
@@ -167,39 +183,23 @@ class FlashcardGenerator: ObservableObject {
         #endif
     }
 
-    // MARK: - JSON Parsing
+    // MARK: - Mapping
 
-    private func parseFlashcardJSON(_ content: String, fallbackTitles: [String]) -> [Flashcard] {
-        var jsonString = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let startRange = jsonString.range(of: "["),
-           let endRange = jsonString.range(of: "]", options: .backwards) {
-            jsonString = String(jsonString[startRange.lowerBound..<endRange.upperBound])
-        }
-
-        guard let data = jsonString.data(using: .utf8) else { return [] }
-
-        struct RawFlashcard: Decodable {
-            let front: String
-            let back: String
-            let sourceCard: String?
-            let category: String?
-        }
-
-        do {
-            let rawFlashcards = try JSONDecoder().decode([RawFlashcard].self, from: data)
-            return rawFlashcards.map { raw in
-                Flashcard(
-                    front: raw.front,
-                    back: raw.back,
-                    sourceCardTitle: raw.sourceCard ?? fallbackTitles.first ?? "Unknown",
-                    category: raw.category
-                )
-            }
-        } catch {
-            print("[FlashcardGenerator] JSON parse error: \(error)")
-            return []
+    #if canImport(FoundationModels)
+    /// Map guided-generation output into `Flashcard` values. The schema guarantees
+    /// the shape, so there's no JSON to parse — we only normalize empty optionals.
+    private func mapGeneratedFlashcards(_ generated: [GeneratedFlashcard], fallbackTitles: [String]) -> [Flashcard] {
+        generated.compactMap { raw in
+            guard !raw.front.isEmpty, !raw.back.isEmpty else { return nil }
+            return Flashcard(
+                front: raw.front,
+                back: raw.back,
+                sourceCardTitle: raw.sourceCard.isEmpty ? (fallbackTitles.first ?? "Unknown") : raw.sourceCard,
+                category: raw.category.isEmpty ? nil : raw.category
+            )
         }
     }
+    #endif
 
     // MARK: - Fallback
 

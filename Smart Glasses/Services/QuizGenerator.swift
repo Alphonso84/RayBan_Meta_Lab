@@ -11,6 +11,28 @@ import SwiftUI
 
 #if canImport(FoundationModels)
 import FoundationModels
+
+/// Guided-generation schema for a set of quiz questions produced by Foundation Models.
+@Generable
+private struct GeneratedQuizSet {
+    @Guide(description: "The generated multiple-choice questions.")
+    var questions: [GeneratedQuizQuestion]
+}
+
+@Generable
+private struct GeneratedQuizQuestion {
+    @Guide(description: "A question testing comprehension of the study material, not just recall.")
+    var question: String
+
+    @Guide(description: "Exactly four answer options. Wrong answers should be plausible but clearly incorrect.")
+    var options: [String]
+
+    @Guide(description: "Zero-based index (0, 1, 2, or 3) of the correct option. Distribute correct answers evenly across all four positions.")
+    var correctIndex: Int
+
+    @Guide(description: "The title of the source card this question is based on.")
+    var sourceCard: String
+}
 #endif
 
 @MainActor
@@ -112,11 +134,10 @@ class QuizGenerator: ObservableObject {
         }
 
         let session = LanguageModelSession(instructions: """
-            You are a quiz generator for study material. Generate multiple-choice questions to test understanding.
-            Each question must have exactly 4 options with 1 correct answer.
-            Respond with ONLY a JSON array, no other text:
-            [{"question": "...", "options": ["A", "B", "C", "D"], "correctIndex": 2, "sourceCard": "card title"}]
-            IMPORTANT: Randomize the position of the correct answer. Distribute correctIndex evenly across 0, 1, 2, and 3.
+            You are a quiz generator for study material. Generate multiple-choice questions that
+            test comprehension, not just recall. Each question must have exactly 4 options with
+            exactly 1 correct answer. Vary question types: definitions, comparisons, applications.
+            Randomize which option is correct — distribute correct answers evenly across all four positions.
             """)
 
         let prompt = """
@@ -131,10 +152,10 @@ class QuizGenerator: ObservableObject {
 
         do {
             progress = 0.4
-            let response = try await session.respond(to: prompt)
+            let response = try await session.respond(to: prompt, generating: GeneratedQuizSet.self)
             progress = 0.8
 
-            let parsed = parseQuizJSON(response.content, fallbackTitles: cardTitles)
+            let parsed = mapGeneratedQuestions(response.content.questions, fallbackTitles: cardTitles)
 
             if parsed.isEmpty {
                 questions = generateFallbackQuestions(cardTitles: cardTitles, text: text, count: count)
@@ -157,49 +178,33 @@ class QuizGenerator: ObservableObject {
         #endif
     }
 
-    // MARK: - JSON Parsing
+    // MARK: - Mapping
 
-    private func parseQuizJSON(_ content: String, fallbackTitles: [String]) -> [QuizQuestion] {
-        var jsonString = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let startRange = jsonString.range(of: "["),
-           let endRange = jsonString.range(of: "]", options: .backwards) {
-            jsonString = String(jsonString[startRange.lowerBound..<endRange.upperBound])
-        }
+    #if canImport(FoundationModels)
+    /// Map guided-generation output into validated `QuizQuestion` values.
+    /// The schema guarantees the shape, so there's no JSON to parse; we still
+    /// validate the option count and re-shuffle so correct-answer positions stay
+    /// evenly distributed regardless of what the model produced.
+    private func mapGeneratedQuestions(_ generated: [GeneratedQuizQuestion], fallbackTitles: [String]) -> [QuizQuestion] {
+        generated.compactMap { raw in
+            guard raw.options.count == 4,
+                  raw.correctIndex >= 0,
+                  raw.correctIndex < 4 else { return nil }
 
-        guard let data = jsonString.data(using: .utf8) else { return [] }
+            let correctAnswer = raw.options[raw.correctIndex]
+            var shuffledOptions = raw.options
+            shuffledOptions.shuffle()
+            let newCorrectIndex = shuffledOptions.firstIndex(of: correctAnswer) ?? 0
 
-        struct RawQuestion: Decodable {
-            let question: String
-            let options: [String]
-            let correctIndex: Int
-            let sourceCard: String?
-        }
-
-        do {
-            let rawQuestions = try JSONDecoder().decode([RawQuestion].self, from: data)
-            return rawQuestions.compactMap { raw in
-                guard raw.options.count == 4,
-                      raw.correctIndex >= 0,
-                      raw.correctIndex < 4 else { return nil }
-
-                // Shuffle options to guarantee randomized answer positions
-                let correctAnswer = raw.options[raw.correctIndex]
-                var shuffledOptions = raw.options
-                shuffledOptions.shuffle()
-                let newCorrectIndex = shuffledOptions.firstIndex(of: correctAnswer) ?? 0
-
-                return QuizQuestion(
-                    question: raw.question,
-                    options: shuffledOptions,
-                    correctAnswerIndex: newCorrectIndex,
-                    sourceCardTitle: raw.sourceCard ?? fallbackTitles.first ?? "Unknown"
-                )
-            }
-        } catch {
-            print("[QuizGenerator] JSON parse error: \(error)")
-            return []
+            return QuizQuestion(
+                question: raw.question,
+                options: shuffledOptions,
+                correctAnswerIndex: newCorrectIndex,
+                sourceCardTitle: raw.sourceCard.isEmpty ? (fallbackTitles.first ?? "Unknown") : raw.sourceCard
+            )
         }
     }
+    #endif
 
     // MARK: - Fallback
 
