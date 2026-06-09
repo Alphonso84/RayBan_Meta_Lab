@@ -9,6 +9,7 @@
 import AppIntents
 import MWDATCamera
 import SwiftUI
+import UniformTypeIdentifiers
 
 // MARK: - Scan Document Intent
 
@@ -108,6 +109,66 @@ struct ScanDocumentIntent: AppIntent {
     }
 }
 
+// MARK: - Capture Photo Intent
+
+/// Intent to capture a high-resolution photo with the glasses and return it as a
+/// file. Shortcuts can then pass the returned image to any other action — save to
+/// Photos, share, upload, run through another app, etc.
+struct CaptureGlassesPhotoIntent: AppIntent {
+    static var title: LocalizedStringResource = "Capture Photo with Glasses"
+    static var description = IntentDescription("Takes a high-resolution photo using your smart glasses and returns the image to your shortcut.")
+
+    static var openAppWhenRun: Bool = true
+
+    @MainActor
+    func perform() async throws -> some IntentResult & ReturnsValue<IntentFile> & ProvidesDialog {
+        let manager = WearablesManager.shared
+
+        // Navigate to the Scan tab so MainTabView starts the stream. The glasses
+        // require the app to be in the foreground to stream, hence openAppWhenRun.
+        NavigationState.shared.selectedTab = .scan
+        try? await Task.sleep(nanoseconds: 200_000_000)
+
+        if manager.streamState == .stopped {
+            manager.startStream()
+        }
+
+        // Wait for the stream to become active (up to 5 seconds).
+        var attempts = 0
+        while manager.streamState != .streaming && attempts < 50 {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            attempts += 1
+        }
+        guard manager.streamState == .streaming else {
+            throw ScanError.connectionFailed
+        }
+
+        // Wait until at least one frame has arrived, signalling the session is ready
+        // to service a high-resolution photo capture.
+        attempts = 0
+        while manager.latestFrameImage == nil && attempts < 20 {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            attempts += 1
+        }
+
+        // Capture a high-resolution still (capturePhotoAsync times out rather than
+        // hanging the shortcut if the capture is dropped).
+        guard let image = await manager.capturePhotoAsync(),
+              let data = image.jpegData(compressionQuality: 0.9) else {
+            throw ScanError.noFrame
+        }
+
+        // Stop the stream now that we have the photo, and return to the Library tab
+        // so the live scanner preview isn't left running (saves battery and avoids
+        // leaving the glasses streaming after a one-shot capture).
+        manager.stopStream()
+        NavigationState.shared.selectedTab = .library
+
+        let file = IntentFile(data: data, filename: "glasses-photo.jpg", type: .jpeg)
+        return .result(value: file, dialog: "Photo captured.")
+    }
+}
+
 /// Errors for scanning intents
 enum ScanError: Error, CustomLocalizedStringResourceConvertible {
     case connectionFailed
@@ -150,6 +211,18 @@ struct SmartGlassesShortcuts: AppShortcutsProvider {
             ],
             shortTitle: "Scan Document",
             systemImageName: "doc.viewfinder"
+        )
+        AppShortcut(
+            intent: CaptureGlassesPhotoIntent(),
+            phrases: [
+                "Take a photo with \(.applicationName)",
+                "Take a picture with \(.applicationName)",
+                "Capture a photo with \(.applicationName)",
+                "\(.applicationName) take a photo",
+                "\(.applicationName) capture a photo"
+            ],
+            shortTitle: "Capture Photo",
+            systemImageName: "camera.fill"
         )
     }
 }

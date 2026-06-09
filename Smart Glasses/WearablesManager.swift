@@ -265,11 +265,26 @@ class WearablesManager: ObservableObject {
         session.capturePhoto(format: .jpeg)
     }
 
-    /// Capture a high-resolution photo and return it asynchronously
-    func capturePhotoAsync() async -> UIImage? {
+    /// Capture a high-resolution photo and return it asynchronously.
+    /// Resolves to `nil` if no photo arrives within `timeout` seconds, so callers
+    /// (e.g. Shortcuts intents) never hang on a dropped capture.
+    func capturePhotoAsync(timeout: TimeInterval = 10) async -> UIImage? {
         await withCheckedContinuation { continuation in
-            capturePhoto { image in
+            var didResume = false
+            let finish: (UIImage?) -> Void = { image in
+                guard !didResume else { return }
+                didResume = true
                 continuation.resume(returning: image)
+            }
+
+            capturePhoto(completion: finish)
+
+            // Safety net: if the photo data publisher never fires, recover.
+            DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
+                guard !didResume else { return }
+                self?.isCapturingPhoto = false
+                self?.photoCaptureCompletion = nil
+                finish(nil)
             }
         }
     }
