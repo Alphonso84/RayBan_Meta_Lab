@@ -1,6 +1,6 @@
 <h1 align="center">Ray-Ban Meta - NoteBuddy</h1>
 
-Imagine reading a book or document and your AI assistant has the ability to summarize, save, and quiz you on what you read. Well RayBan Meta Notebuddy does just that. Notebuddy is a powerful iOS application that pairs with Ray-Ban Meta smart glasses (via [Meta Wearables SDK](https://github.com/facebook/meta-wearables-dat-ios)) to transform physical documents into AI-summarized study cards. Scan documents hands-free through your smart glasses — or use your phone's camera as a fallback — extract text with OCR, generate intelligent summaries, and organize content into study decks with quiz mode.
+Imagine reading a book or document and your AI assistant has the ability to summarize, save, and quiz you on what you read. Well Notebuddy does just that. Notebuddy is a iOS application that pairs with Ray-Ban Meta smart glasses (via [Meta Wearables SDK](https://github.com/facebook/meta-wearables-dat-ios)) to transform physical documents into AI-summarized study cards. Scan documents hands-free through your smart glasses — or use your phone's camera as a fallback — extract text with OCR, generate intelligent summaries, and organize content into study decks with quiz mode.
 
 Supports dual AI providers: [Apple Foundation Models](https://developer.apple.com/documentation/FoundationModels) for fully on-device, offline summarization, and OpenAI for cloud-powered summarization, text-to-speech, and quiz generation.
 
