@@ -26,6 +26,11 @@ final class SummaryCard {
     /// Original OCR text for reference
     var sourceText: String
 
+    /// Description of diagrams, charts, tables or equations on the scanned page.
+    /// Nil for cards created before vision summarization, and empty for pages
+    /// that are text only.
+    var visualDescription: String?
+
     /// Optional page number or section reference
     var pageNumber: Int?
 
@@ -45,6 +50,7 @@ final class SummaryCard {
         summary: String,
         keyPoints: [String] = [],
         sourceText: String,
+        visualDescription: String? = nil,
         pageNumber: Int? = nil,
         thumbnailData: Data? = nil,
         createdAt: Date = Date(),
@@ -55,6 +61,7 @@ final class SummaryCard {
         self.summary = summary
         self.keyPoints = keyPoints
         self.sourceText = sourceText
+        self.visualDescription = visualDescription
         self.pageNumber = pageNumber
         self.thumbnailData = thumbnailData
         self.createdAt = createdAt
@@ -80,12 +87,22 @@ extension SummaryCard {
         return String(summary.prefix(100)) + "..."
     }
 
-    /// Full text for TTS (summary + key points)
+    /// Whether the page carried a diagram, chart, table or equation
+    var hasVisualDescription: Bool {
+        guard let visualDescription else { return false }
+        return !visualDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Full text for TTS (summary + key points + any figure description)
     var textForSpeech: String {
         var text = summary
         if !keyPoints.isEmpty {
             text += ". Key points: "
             text += keyPoints.joined(separator: ". ")
+        }
+        if hasVisualDescription, let visualDescription {
+            text += ". On the page: "
+            text += visualDescription
         }
         return text
     }

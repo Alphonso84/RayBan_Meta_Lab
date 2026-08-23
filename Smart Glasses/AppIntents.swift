@@ -87,7 +87,7 @@ struct ScanDocumentIntent: AppIntent {
         await summarizer.checkAvailability()
         // Provider selection is read from @AppStorage automatically
 
-        guard let summaryOutput = await summarizer.summarize(extractedText) else {
+        guard let summaryOutput = await summarizer.summarize(extractedText, pageImage: result.visionImage) else {
             // Fallback to raw text if summarization fails
             let preview = extractedText.count > 200 ? String(extractedText.prefix(200)) + "..." : extractedText
             return .result(value: extractedText, dialog: "Scanned: \(preview)")
@@ -223,6 +223,27 @@ struct SmartGlassesShortcuts: AppShortcutsProvider {
             ],
             shortTitle: "Capture Photo",
             systemImageName: "camera.fill"
+        )
+        AppShortcut(
+            intent: ReadCardIntent(),
+            phrases: [
+                "Read my last card in \(.applicationName)",
+                "Read a card from \(.applicationName)",
+                "\(.applicationName) read my notes",
+                "\(.applicationName) read my last card"
+            ],
+            shortTitle: "Read a Card",
+            systemImageName: "speaker.wave.2"
+        )
+        AppShortcut(
+            intent: SummarizeDeckIntent(),
+            phrases: [
+                "Summarize a deck in \(.applicationName)",
+                "Summarize my deck in \(.applicationName)",
+                "\(.applicationName) summarize a deck"
+            ],
+            shortTitle: "Summarize a Deck",
+            systemImageName: "sparkles"
         )
     }
 }

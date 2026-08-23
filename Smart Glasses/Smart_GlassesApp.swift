@@ -18,17 +18,8 @@ struct Smart_GlassesApp: App {
     init() {
         configureWearables()
 
-        // Initialize SwiftData container
-        do {
-            let schema = Schema([SummaryCard.self, SummaryDeck.self])
-            let modelConfiguration = ModelConfiguration(
-                schema: schema,
-                isStoredInMemoryOnly: false
-            )
-            modelContainer = try ModelContainer(for: schema, configurations: [modelConfiguration])
-        } catch {
-            fatalError("Failed to create SwiftData container: \(error)")
-        }
+        // Shared with App Intents, which may run outside this process.
+        modelContainer = SharedModelContainer.shared
     }
 
     var body: some Scene {
@@ -37,6 +28,13 @@ struct Smart_GlassesApp: App {
                 .modelContainer(modelContainer)
                 .onOpenURL { url in
                     handleURL(url)
+                }
+                .task {
+                    // Keep the index live: reindex now, then again on every
+                    // SwiftData save so a card is searchable the moment it is
+                    // scanned rather than only after the next launch.
+                    StudyEntityIndexer.startObservingChanges()
+                    await StudyEntityIndexer.reindexAll()
                 }
         }
     }

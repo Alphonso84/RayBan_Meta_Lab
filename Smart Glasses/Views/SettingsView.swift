@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import AVFoundation
 import MWDATCamera
 
 /// Settings view for app configuration and glasses connection
@@ -16,8 +17,12 @@ struct SettingsView: View {
     @AppStorage("distanceModeEnabled") private var distanceModeEnabled = true
     @AppStorage("multiPageModeEnabled") private var multiPageModeEnabled = false
     @AppStorage("selectedProvider") private var selectedProvider = "apple"
+    @AppStorage("useVisionSummarization") private var useVisionSummarization = true
     @AppStorage("openAIModel") private var openAIModel = "gpt-4o-mini"
     @AppStorage("openAIVoice") private var openAIVoice = "nova"
+    @AppStorage("appleVoiceIdentifier") private var appleVoiceIdentifier = VoiceFeedbackManager.bestAvailableVoiceTag
+
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var apiKeyInput = ""
     @State private var apiKeySaved = false
@@ -25,10 +30,17 @@ struct SettingsView: View {
     @State private var isFetchingModels = false
     @State private var isTestingConnection = false
     @State private var connectionTestResult: ConnectionTestResult?
+    @State private var installedVoices: [AVSpeechSynthesisVoice] = []
 
     private enum ConnectionTestResult {
         case success
         case failure(String)
+    }
+
+    /// Not every device's model variant supports image attachments, so hide the
+    /// toggle rather than offer a dead control.
+    private var visionSummarizationSupported: Bool {
+        PageVisionPrompt.isVisionSupported
     }
 
     var body: some View {
@@ -57,6 +69,12 @@ struct SettingsView: View {
                         Text(manager.registrationStateDescription)
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
+                    }
+
+                    if let registrationError = manager.registrationErrorMessage {
+                        Label(registrationError, systemImage: "exclamationmark.triangle")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
                     }
 
                     // Stream status
@@ -101,7 +119,7 @@ struct SettingsView: View {
                         } label: {
                             Label("Stop Stream", systemImage: "stop.circle")
                         }
-                    } else if manager.registrationStateDescription == "Registered" {
+                    } else if manager.isRegistered {
                         Button {
                             manager.startStream()
                         } label: {
@@ -137,19 +155,88 @@ struct SettingsView: View {
                     Toggle(isOn: $speakSummaries) {
                         Label("Speak Summaries", systemImage: "speaker.wave.2")
                     }
+
+                    if visionSummarizationSupported {
+                        Toggle(isOn: $useVisionSummarization) {
+                            Label("Read Page Images", systemImage: "eye")
+                        }
+                    }
                 } header: {
                     Text("Scanning")
                 } footer: {
-                    Text("Single-page mode auto-summarizes immediately after capture. Multi-page mode lets you scan multiple pages before generating one combined summary.")
+                    if visionSummarizationSupported {
+                        Text("Single-page mode auto-summarizes immediately after capture. Multi-page mode lets you scan multiple pages before generating one combined summary.\n\nRead Page Images sends the scanned page to the on-device model alongside the extracted text, so it can correct misread words and describe diagrams, charts and tables. Summaries take slightly longer. The image never leaves your device.")
+                    } else {
+                        Text("Single-page mode auto-summarizes immediately after capture. Multi-page mode lets you scan multiple pages before generating one combined summary.")
+                    }
+                }
+
+                // Voice Section
+                Section {
+                    Picker(selection: $appleVoiceIdentifier) {
+                        Text("Best Available").tag(VoiceFeedbackManager.bestAvailableVoiceTag)
+                        Text("System Default").tag(VoiceFeedbackManager.systemDefaultVoiceTag)
+
+                        ForEach(installedVoices, id: \.identifier) { voice in
+                            Text(VoiceFeedbackManager.displayName(for: voice))
+                                .tag(voice.identifier)
+                        }
+                    } label: {
+                        Label("Voice", systemImage: "waveform")
+                    }
+
+                    Button {
+                        VoiceFeedbackManager.shared.speakImmediately(
+                            "This is how your document summaries will sound."
+                        )
+                    } label: {
+                        Label("Preview Voice", systemImage: "play.circle")
+                    }
+
+                    if !hasHighQualityVoice {
+                        Label(
+                            "Only basic voices are installed. Download an Enhanced or Premium voice in Settings → Accessibility → Spoken Content → Voices → English for a more natural sound.",
+                            systemImage: "arrow.down.circle"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                } header: {
+                    Text("Voice")
+                } footer: {
+                    Text("Used for capture cues, and for reading summaries when the provider is Apple Intelligence. OpenAI summaries use the OpenAI voice below.")
                 }
 
                 // AI Provider Section
                 Section {
                     Picker("Provider", selection: $selectedProvider) {
-                        Text("Apple Intelligence").tag("apple")
+                        Text("On-Device").tag("apple")
+                        Text("Apple Cloud").tag("pcc")
                         Text("OpenAI").tag("openai")
                     }
                     .pickerStyle(.segmented)
+
+                    if selectedProvider == "pcc" {
+                        if let unavailable = AppleModelProvider.pccUnavailableMessage {
+                            Label(unavailable, systemImage: "exclamationmark.triangle")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        } else {
+                            Label("Private Cloud Compute is ready", systemImage: "checkmark.circle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.green)
+                        }
+
+                        if let quota = AppleModelProvider.pccQuotaMessage {
+                            Button {
+                                AppleModelProvider.showQuotaIncreaseSuggestion()
+                            } label: {
+                                Label(quota, systemImage: "gauge.with.needle")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
 
                     if selectedProvider == "openai" {
                         // API Key
@@ -245,10 +332,13 @@ struct SettingsView: View {
                 } header: {
                     Text("AI Provider")
                 } footer: {
-                    if selectedProvider == "openai" {
+                    switch selectedProvider {
+                    case "openai":
                         Text("Your API key is stored securely in the Keychain. Tap Refresh to load available models from OpenAI.")
-                    } else {
-                        Text("Apple Intelligence runs on-device and requires iOS 26+.")
+                    case "pcc":
+                        Text("Apple Cloud uses Private Cloud Compute: a larger model with a bigger context window, so deck summaries are written in one pass instead of being stitched together from batches. No API key, no billing, and Apple does not store your prompts.\n\nScanned page images are always read on-device — only text is sent. If the network is unavailable or you reach your limit, summaries fall back to the on-device model automatically.")
+                    default:
+                        Text("The on-device model runs entirely on your iPhone and works offline. Requires iOS 26+.")
                     }
                 }
 
@@ -270,20 +360,33 @@ struct SettingsView: View {
             }
             .navigationTitle("Settings")
             .onAppear {
+                manager.refreshRegistrationState()
                 Task {
-                    await manager.refreshRegistrationState()
                     await manager.refreshCameraPermissionStatus()
                 }
                 // Check if API key already exists
                 apiKeySaved = KeychainHelper.loadString(key: "openai_api_key") != nil
+                installedVoices = VoiceFeedbackManager.availableEnglishVoices()
+            }
+            .onChange(of: scenePhase) { _, newPhase in
+                // Voices the user downloads in the Settings app only show up
+                // after we re-enumerate, so refresh on return to foreground.
+                if newPhase == .active {
+                    installedVoices = VoiceFeedbackManager.availableEnglishVoices()
+                }
             }
         }
+    }
+
+    /// Whether any enhanced or premium voice is installed.
+    private var hasHighQualityVoice: Bool {
+        installedVoices.contains { $0.quality != .default }
     }
 
     private var statusColor: Color {
         if manager.deviceStatus.contains("Connected") {
             return .green
-        } else if manager.registrationStateDescription == "Registered" {
+        } else if manager.isRegistered {
             return .yellow
         } else {
             return .red
@@ -298,6 +401,10 @@ struct SettingsView: View {
             return "Starting..."
         case .stopping:
             return "Stopping..."
+        case .waitingForDevice:
+            return "Waiting for glasses..."
+        case .paused:
+            return "Paused"
         case .stopped:
             return "Stopped"
         @unknown default:
@@ -309,7 +416,7 @@ struct SettingsView: View {
         switch manager.streamState {
         case .streaming:
             return .green
-        case .starting, .stopping:
+        case .starting, .stopping, .waitingForDevice, .paused:
             return .orange
         case .stopped:
             return .secondary

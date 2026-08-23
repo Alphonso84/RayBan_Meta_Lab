@@ -76,12 +76,7 @@ struct DeckDetailView: View {
 
                     if sortedCards.count >= 2 {
                         Button {
-                            if selectedProvider == "apple" && !hideRecommendation {
-                                pendingAction = .deckSummary
-                                showingProviderAlert = true
-                            } else {
-                                showingDeckSummary = true
-                            }
+                            begin(.deckSummary)
                         } label: {
                             if deck.hasDeckSummary {
                                 Label(deck.isSummaryOutdated ? "View Deck Summary (Outdated)" : "View Deck Summary", systemImage: "doc.text.magnifyingglass")
@@ -100,23 +95,13 @@ struct DeckDetailView: View {
 
                         if sortedCards.count >= 2 {
                             Button {
-                                if selectedProvider == "apple" && !hideRecommendation {
-                                    pendingAction = .quiz
-                                    showingProviderAlert = true
-                                } else {
-                                    showingQuiz = true
-                                }
+                                begin(.quiz)
                             } label: {
                                 Label("Start Quiz", systemImage: "questionmark.circle")
                             }
 
                             Button {
-                                if selectedProvider == "apple" && !hideRecommendation {
-                                    pendingAction = .flashcards
-                                    showingProviderAlert = true
-                                } else {
-                                    showingFlashcards = true
-                                }
+                                begin(.flashcards)
                             } label: {
                                 Label("Study Flashcards", systemImage: "rectangle.on.rectangle.angled")
                             }
@@ -175,10 +160,10 @@ struct DeckDetailView: View {
                 PDFImportView(pdfURL: url, targetDeck: deck)
             }
         }
-        .alert("OpenAI Recommended", isPresented: $showingProviderAlert) {
+        .alert(recommendedProviderTitle, isPresented: $showingProviderAlert) {
             Button("Continue Anyway") { executePendingAction() }
-            Button("Switch to OpenAI") {
-                selectedProvider = "openai"
+            Button(recommendedProviderButton) {
+                selectedProvider = recommendedProvider
                 executePendingAction()
             }
             Button("Don't Show Again", role: .cancel) {
@@ -198,25 +183,69 @@ struct DeckDetailView: View {
 
     // MARK: - Provider Alert Helpers
 
+    /// Recommend Apple's own cloud tier: no API key, no billing, prompts not stored.
+    private let recommendedProvider = "pcc"
+    private let recommendedProviderTitle = "Apple Cloud Recommended"
+    private let recommendedProviderButton = "Switch to Apple Cloud"
+
     private var providerAlertMessage: String {
+        let remedy = "Apple Cloud (Private Cloud Compute) has a much larger context window and can reason about the material before answering. It needs no API key and stores no prompts."
+
+        // The alert only appears once the deck has been measured against the
+        // on-device context window, so these can state the problem rather than
+        // hedge about what the model "may" struggle with.
         switch pendingAction {
         case .quiz:
-            return "Quiz generation requires large structured output that the on-device model may struggle with. Switching to the OpenAI cloud model is recommended for better results."
+            return "This deck is larger than the on-device model's context window, so it would only see part of your cards when writing questions. \(remedy)"
         case .flashcards:
-            return "Flashcard generation involves large structured output that the on-device model may struggle with. Switching to the OpenAI cloud model is recommended for better results."
+            return "This deck is larger than the on-device model's context window, so it would only see part of your cards when making flashcards. \(remedy)"
         case .deckSummary:
-            return "Deck summaries combine content across multiple cards, which can exceed what the on-device model handles well. Switching to the OpenAI cloud model is recommended for better results."
+            return "This deck is larger than the on-device model's context window, so it would have to be summarized in batches and themes spanning several cards may be missed. \(remedy)"
         case nil:
             return ""
         }
     }
 
-    private func executePendingAction() {
-        switch pendingAction {
+    /// Start an AI action, warning about the on-device model only when this
+    /// deck genuinely will not fit its context window.
+    ///
+    /// The alert used to fire for every deck on the on-device provider, which
+    /// trained people to dismiss it. Now it is a measurement.
+    private func begin(_ action: PendingAIAction) {
+        guard selectedProvider == "apple", !hideRecommendation else {
+            execute(action)
+            return
+        }
+
+        Task {
+            if await deckExceedsOnDeviceBudget() {
+                pendingAction = action
+                showingProviderAlert = true
+            } else {
+                execute(action)
+            }
+        }
+    }
+
+    /// Whether this deck's content exceeds what the on-device model can hold in
+    /// one request. Quizzes and flashcards read the same combined card text as
+    /// the deck summary, so one measurement covers all three actions.
+    private func deckExceedsOnDeviceBudget() async -> Bool {
+        let budget = await TokenBudget.makeBudget(instructions: StreamingSummarizer.deckInstructions)
+        return await !TokenBudget.fits(deck.combinedCardSummaries, in: budget)
+    }
+
+    private func execute(_ action: PendingAIAction) {
+        switch action {
         case .quiz: showingQuiz = true
         case .flashcards: showingFlashcards = true
         case .deckSummary: showingDeckSummary = true
-        case nil: break
+        }
+    }
+
+    private func executePendingAction() {
+        if let pendingAction {
+            execute(pendingAction)
         }
         pendingAction = nil
     }
@@ -428,6 +457,20 @@ struct CardCarouselItem: View {
                                         .lineSpacing(2)
                                 }
                             }
+                        }
+                    }
+
+                    // Diagrams, charts and tables the model read off the page
+                    if card.hasVisualDescription, let visualDescription = card.visualDescription {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Label("On the Page", systemImage: "chart.xyaxis.line")
+                                .font(.subheadline)
+                                .fontWeight(.semibold)
+                                .foregroundStyle(.secondary)
+
+                            Text(visualDescription)
+                                .font(.subheadline)
+                                .lineSpacing(2)
                         }
                     }
                 }

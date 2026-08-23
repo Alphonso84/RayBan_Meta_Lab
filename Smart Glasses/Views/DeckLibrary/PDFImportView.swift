@@ -35,6 +35,32 @@ struct PDFImportView: View {
         pdfURL.deletingPathExtension().lastPathComponent
     }
 
+    /// Start the import, warning about the on-device model only when a page
+    /// genuinely will not fit its context window.
+    private func beginImport() {
+        guard selectedProvider == "apple", !hideRecommendation else {
+            startImport()
+            return
+        }
+
+        Task {
+            if await largestPageExceedsOnDeviceBudget() {
+                showingProviderAlert = true
+            } else {
+                startImport()
+            }
+        }
+    }
+
+    /// Pages are summarized one at a time in separate sessions, so nothing
+    /// accumulates across them — what matters is whether the *biggest single
+    /// page* fits, not how long the document is.
+    private func largestPageExceedsOnDeviceBudget() async -> Bool {
+        guard let longestPage = pages.max(by: { $0.text.count < $1.text.count }) else { return false }
+        let budget = await TokenBudget.makeBudget(instructions: StreamingSummarizer.documentInstructions)
+        return await !TokenBudget.fits(longestPage.text, in: budget)
+    }
+
     enum ImportState: Equatable {
         case ready
         case importing
@@ -72,10 +98,10 @@ struct PDFImportView: View {
             }
         }
         .presentationDetents([.large])
-        .alert("OpenAI Recommended", isPresented: $showingProviderAlert) {
+        .alert("Apple Cloud Recommended", isPresented: $showingProviderAlert) {
             Button("Continue Anyway") { startImport() }
-            Button("Switch to OpenAI") {
-                selectedProvider = "openai"
+            Button("Switch to Apple Cloud") {
+                selectedProvider = "pcc"
                 startImport()
             }
             Button("Don't Show Again", role: .cancel) {
@@ -83,7 +109,7 @@ struct PDFImportView: View {
                 startImport()
             }
         } message: {
-            Text("PDF import processes multiple pages sequentially, which can exceed what the on-device model handles well. Switching to the OpenAI cloud model is recommended for better results.")
+            Text("At least one page in this PDF is longer than the on-device model's context window, so its summary would be truncated. Apple Cloud (Private Cloud Compute) has a much larger context window, needs no API key, and stores no prompts.")
         }
         .onAppear {
             loadPDF()
@@ -122,11 +148,7 @@ struct PDFImportView: View {
             }
 
             Button {
-                if selectedProvider == "apple" && !hideRecommendation {
-                    showingProviderAlert = true
-                } else {
-                    startImport()
-                }
+                beginImport()
             } label: {
                 Label("Start Import", systemImage: "square.and.arrow.down")
                     .font(.headline)
@@ -328,14 +350,28 @@ struct PDFImportView: View {
 
                 currentPageIndex = index
 
+                // Render the page for the model. PDFs are born-digital, so their
+                // text is already clean — the image is here for the diagrams and
+                // tables that `page.string` drops entirely.
+                var pageImage: UIImage?
+                if let pdfDoc = pdfDocument {
+                    pageImage = PDFImporter.extractPageThumbnail(
+                        from: pdfDoc,
+                        pageIndex: page.pageNumber - 1,
+                        maxSize: PageVisionImage.defaultMaxDimension
+                    )
+                }
+
                 // Summarize the page text
-                let summaryOutput = await summarizer.summarize(page.text)
+                let summaryOutput = await summarizer.summarize(page.text, pageImage: pageImage)
 
                 if Task.isCancelled { break }
 
                 let title = summaryOutput?.suggestedTitle ?? "Page \(page.pageNumber)"
                 let summary = summaryOutput?.summary ?? page.text.prefix(200).description
                 let keyPoints = summaryOutput?.keyPoints ?? []
+                let visualDescription = (summaryOutput?.visualDescription ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
 
                 // Generate thumbnail
                 var thumbnailData: Data?
@@ -353,6 +389,7 @@ struct PDFImportView: View {
                     summary: summary,
                     keyPoints: keyPoints,
                     sourceText: page.text,
+                    visualDescription: visualDescription.isEmpty ? nil : visualDescription,
                     pageNumber: page.pageNumber,
                     thumbnailData: thumbnailData,
                     deck: deck

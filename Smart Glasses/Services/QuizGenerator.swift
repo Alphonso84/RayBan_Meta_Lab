@@ -125,20 +125,42 @@ class QuizGenerator: ObservableObject {
 
     private func generateWithAppleIntelligence(text: String, cardTitles: [String], count: Int) async {
         #if canImport(FoundationModels)
-        let availability = SystemLanguageModel.default.availability
-        guard case .available = availability else {
+        await generateWithAppleIntelligence(
+            text: text,
+            cardTitles: cardTitles,
+            count: count,
+            tier: AppleModelProvider.textTier(for: selectedProvider)
+        )
+        #else
+        questions = generateFallbackQuestions(cardTitles: cardTitles, text: text, count: count)
+        progress = 1.0
+        state = questions.isEmpty ? .error("Foundation Models requires iOS 26+") : .complete
+        #endif
+    }
+
+    #if canImport(FoundationModels)
+
+    static let quizInstructions = """
+        You are a quiz generator for study material. Generate multiple-choice questions that
+        test comprehension, not just recall. Each question must have exactly 4 options with
+        exactly 1 correct answer. Vary question types: definitions, comparisons, applications.
+        Randomize which option is correct — distribute correct answers evenly across all four positions.
+        """
+
+    /// Generate on a specific tier, retrying on-device if Private Cloud Compute
+    /// fails for a transient reason.
+    private func generateWithAppleIntelligence(
+        text: String,
+        cardTitles: [String],
+        count: Int,
+        tier: AppleModelTier
+    ) async {
+        guard let session = AppleModelProvider.makeSession(tier: tier, instructions: Self.quizInstructions) else {
             questions = generateFallbackQuestions(cardTitles: cardTitles, text: text, count: count)
             progress = 1.0
             state = questions.isEmpty ? .error("Apple Intelligence not available") : .complete
             return
         }
-
-        let session = LanguageModelSession(instructions: """
-            You are a quiz generator for study material. Generate multiple-choice questions that
-            test comprehension, not just recall. Each question must have exactly 4 options with
-            exactly 1 correct answer. Vary question types: definitions, comparisons, applications.
-            Randomize which option is correct — distribute correct answers evenly across all four positions.
-            """)
 
         let prompt = """
         Generate \(count) multiple-choice questions from this study material.
@@ -152,10 +174,18 @@ class QuizGenerator: ObservableObject {
 
         do {
             progress = 0.4
-            let response = try await session.respond(to: prompt, generating: GeneratedQuizSet.self)
+            // Writing distractors that are plausible but wrong is a reasoning
+            // problem, not a retrieval one — this is where a reasoning model pulls
+            // furthest ahead, so spend the extra compute when we are on PCC.
+            let generated = try await AppleModelProvider.respond(
+                session: session,
+                to: prompt,
+                generating: GeneratedQuizSet.self,
+                reasoning: tier == .privateCloudCompute
+            )
             progress = 0.8
 
-            let parsed = mapGeneratedQuestions(response.content.questions, fallbackTitles: cardTitles)
+            let parsed = mapGeneratedQuestions(generated.questions, fallbackTitles: cardTitles)
 
             if parsed.isEmpty {
                 questions = generateFallbackQuestions(cardTitles: cardTitles, text: text, count: count)
@@ -167,16 +197,27 @@ class QuizGenerator: ObservableObject {
             state = .complete
         } catch {
             print("[QuizGenerator] Apple Intelligence error: \(error)")
+
+            // Retry locally before resorting to title-derived questions, which
+            // are markedly worse than anything a model produces.
+            if tier == .privateCloudCompute, AppleModelProvider.isRecoverablePCCError(error) {
+                print("[QuizGenerator] Private Cloud Compute failed; retrying on-device")
+                await generateWithAppleIntelligence(
+                    text: text,
+                    cardTitles: cardTitles,
+                    count: count,
+                    tier: .onDevice
+                )
+                return
+            }
+
             questions = generateFallbackQuestions(cardTitles: cardTitles, text: text, count: count)
             progress = 1.0
             state = questions.isEmpty ? .error(error.localizedDescription) : .complete
         }
-        #else
-        questions = generateFallbackQuestions(cardTitles: cardTitles, text: text, count: count)
-        progress = 1.0
-        state = questions.isEmpty ? .error("Foundation Models requires iOS 26+") : .complete
-        #endif
     }
+
+    #endif
 
     // MARK: - Mapping
 

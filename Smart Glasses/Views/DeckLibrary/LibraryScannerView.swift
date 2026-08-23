@@ -33,6 +33,15 @@ struct LibraryScannerView: View {
     @State private var showPageCapturedOptions = false  // Show options after page capture
     @State private var usingPhoneCamera = false
 
+    @AppStorage("captureMode") private var captureModeRaw = CaptureMode.document.rawValue
+    @StateObject private var barcodeScanner = BookBarcodeScanner()
+    @State private var showingBookDeckSheet = false
+    @State private var scannedBook: ScannedBookCode?
+
+    private var captureMode: CaptureMode {
+        CaptureMode(rawValue: captureModeRaw) ?? .document
+    }
+
     /// Whether any camera source is actively providing frames
     private var isActivelyScanning: Bool {
         if manager.isGlassesConnected { return true }
@@ -59,6 +68,19 @@ struct LibraryScannerView: View {
 
                 // Overlay content
                 VStack(spacing: 0) {
+                    // Capture mode picker — document / whiteboard / book barcode
+                    Picker("Mode", selection: $captureModeRaw) {
+                        ForEach(CaptureMode.allCases) { mode in
+                            Label(mode.title, systemImage: mode.symbolName).tag(mode.rawValue)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+                    .onChange(of: captureModeRaw) { _, _ in
+                        handleCaptureModeChange()
+                    }
+
                     // Top bar with title and mode toggles
                     HStack {
                         // Auto-capture toggle
@@ -201,6 +223,24 @@ struct LibraryScannerView: View {
                     )
                 }
             }
+            .sheet(isPresented: $showingBookDeckSheet) {
+                if let book = scannedBook {
+                    BookDeckSheet(
+                        book: book,
+                        onCreate: { title in
+                            createDeck(named: title, from: book)
+                            showingBookDeckSheet = false
+                            processor.clearRecognizedBarcode()
+                        },
+                        onCancel: {
+                            showingBookDeckSheet = false
+                            scannedBook = nil
+                            barcodeScanner.reset()
+                            processor.clearRecognizedBarcode()
+                        }
+                    )
+                }
+            }
             .onAppear {
                 // Stream lifecycle is managed by MainTabView - don't start here
                 configureProcessorForDistanceMode()
@@ -228,7 +268,10 @@ struct LibraryScannerView: View {
                 processor.stopAutoCapture()
             }
             .onChange(of: processor.latestResult) { _, newResult in
-                if let result = newResult, !result.extractedText.isEmpty {
+                // Uses the same rule the processor used to accept the capture —
+                // a whiteboard with unreadable handwriting has no OCR text but
+                // is still summarizable from the image.
+                if let result = newResult, result.isSummarizable(in: captureMode) {
                     if isMultiPageMode {
                         // In multi-page mode, show options instead of immediately summarizing
                         showPageCapturedOptions = true
@@ -271,6 +314,17 @@ struct LibraryScannerView: View {
                     triggerHighResPhotoCapture()
                 }
             }
+            .onChange(of: processor.recognizedBarcode) { _, barcode in
+                // Vision read the code straight from the preview — no capture,
+                // no model round trip, so go directly to the deck sheet.
+                guard let barcode else { return }
+                scannedBook = ScannedBookCode(
+                    code: barcode.payload,
+                    isISBN: barcode.isISBN,
+                    recognizedTitle: ""
+                )
+                showingBookDeckSheet = true
+            }
         }
     }
 
@@ -286,7 +340,7 @@ struct LibraryScannerView: View {
 
             if let image = image {
                 print("[LibraryScannerView] Got high-res photo: \(image.size.width)x\(image.size.height)")
-                processor.captureAndProcess(image)
+                handleCapturedPhoto(image)
                 processor.autoCaptureDidComplete()
             } else {
                 print("[LibraryScannerView] Photo capture failed")
@@ -361,8 +415,21 @@ struct LibraryScannerView: View {
                     .padding(.horizontal, 40)
             }
 
-            // Action buttons based on state
-            if manager.registrationStateDescription != "Registered" {
+            // Action buttons based on state. Permission comes first — neither
+            // connecting nor starting a stream can succeed without it.
+            if manager.needsCameraPermission {
+                Button {
+                    Task { await manager.requestCameraPermission() }
+                } label: {
+                    Label("Allow Camera Access", systemImage: "camera.fill")
+                        .font(.headline)
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 12)
+                        .background(Color.orange)
+                        .foregroundStyle(.white)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+            } else if !manager.isRegistered {
                 Button {
                     manager.startRegistration()
                 } label: {
@@ -433,7 +500,7 @@ struct LibraryScannerView: View {
             }
 
             // Settings hint
-            if manager.registrationStateDescription != "Registered" {
+            if !manager.isRegistered {
                 Text("Go to Settings tab to manage glasses connection")
                     .font(.caption)
                     .foregroundStyle(.gray.opacity(0.7))
@@ -443,6 +510,9 @@ struct LibraryScannerView: View {
     }
 
     private var connectionStatusTitle: String {
+        if manager.needsCameraPermission {
+            return "Camera Access Needed"
+        }
         switch manager.streamState {
         case .streaming:
             return "Connected"
@@ -450,8 +520,12 @@ struct LibraryScannerView: View {
             return "Connecting..."
         case .stopping:
             return "Disconnecting..."
+        case .waitingForDevice:
+            return "Waiting for Glasses"
+        case .paused:
+            return "Paused"
         case .stopped:
-            if manager.registrationStateDescription == "Registered" {
+            if manager.isRegistered {
                 return "Glasses Ready"
             } else {
                 return "Glasses Not Connected"
@@ -462,6 +536,9 @@ struct LibraryScannerView: View {
     }
 
     private var connectionStatusSubtitle: String {
+        if manager.needsCameraPermission {
+            return "Allow this app to use your glasses' camera, then scanning starts on its own"
+        }
         switch manager.streamState {
         case .streaming:
             return "Receiving video from Smart Glasses"
@@ -469,8 +546,12 @@ struct LibraryScannerView: View {
             return "Establishing connection..."
         case .stopping:
             return "Closing connection..."
+        case .waitingForDevice:
+            return "Looking for your glasses — make sure they are on and worn"
+        case .paused:
+            return "Streaming paused by the glasses — it resumes on its own"
         case .stopped:
-            if manager.registrationStateDescription == "Registered" {
+            if manager.isRegistered {
                 return "Tap Start Stream to begin scanning"
             } else {
                 return "Connect your Meta Ray-Ban Smart Glasses to scan documents"
@@ -929,6 +1010,33 @@ struct LibraryScannerView: View {
 
     /// Configure processor settings based on distance mode
     private func configureProcessorForDistanceMode() {
+        processor.captureMode = captureMode
+
+        // Whiteboards need the opposite of the OCR profile. Grayscale throws away
+        // marker colour, which on a board is meaningful ("the red boxes are the
+        // constraints"), and boosting contrast on a glossy surface amplifies
+        // overhead-light glare rather than sharpening the writing. The model gets
+        // the un-preprocessed `visionImage` either way, so this only governs OCR —
+        // but the preprocessed copy is also what the user sees as the thumbnail.
+        if captureMode == .whiteboard {
+            processor.targetProcessingDimension = 3000
+            processor.preprocessImage = false
+            processor.convertToGrayscale = false
+            processor.useAdaptiveThreshold = false
+            processor.textConfidenceThreshold = 0.15   // marker handwriting scores low
+            processor.documentConfidenceThreshold = 0.25
+            processor.minimumTextLines = 1
+            processor.minimumCharacters = 1
+            // Standing back from a board, the same head movement sweeps far more
+            // of the scene than it does over a page held at arm's length.
+            processor.stabilityThreshold = 0.05
+            processor.stableFramesRequired = 10
+            return
+        }
+
+        processor.stabilityThreshold = 0.03
+        processor.stableFramesRequired = 8
+
         if distanceModeEnabled {
             // Distance mode: Optimized for far distance scanning
             // Aggressive upscale so Vision has more pixels after perspective crop
@@ -974,7 +1082,7 @@ struct LibraryScannerView: View {
         if usingPhoneCamera {
             phoneCamera.capturePhoto { image in
                 if let image = image {
-                    processor.captureAndProcess(image)
+                    handleCapturedPhoto(image)
                 }
             }
         } else {
@@ -982,9 +1090,72 @@ struct LibraryScannerView: View {
         }
     }
 
+    /// Route a captured photo to the pipeline for the current mode.
+    ///
+    /// Barcode mode bypasses OCR and summarization entirely — the model's
+    /// barcode tool reads the code directly off the image.
+    private func handleCapturedPhoto(_ image: UIImage) {
+        guard captureMode == .barcode else {
+            processor.captureAndProcess(image)
+            return
+        }
+
+        Task {
+            if let scanned = await barcodeScanner.scan(image) {
+                scannedBook = scanned
+                showingBookDeckSheet = true
+                VoiceFeedbackManager.shared.captureSuccess()
+            } else {
+                VoiceFeedbackManager.shared.captureFailedInsufficientText()
+            }
+        }
+    }
+
+    /// Reset capture state when switching modes, so a half-finished session in
+    /// one mode does not leak into the next.
+    private func handleCaptureModeChange() {
+        processor.captureMode = captureMode
+        configureProcessorForDistanceMode()
+
+        barcodeScanner.reset()
+        summarizer.reset()
+        processor.latestResult = nil
+        processor.clearRecognizedBarcode()
+        showPageCapturedOptions = false
+
+        // Barcode mode still runs the frame loop — it just detects barcodes with
+        // Vision rather than looking for a document rectangle.
+        if isAutoCaptureOn {
+            processor.resetAutoCapture()
+        }
+    }
+
+    /// Create a deck from a scanned book barcode.
+    private func createDeck(named title: String, from book: ScannedBookCode) {
+        let deck = SummaryDeck(
+            title: title,
+            colorHex: SummaryDeck.randomColor
+        )
+        deck.deckDescription = book.isISBN ? "ISBN \(book.code)" : "Barcode \(book.code)"
+        modelContext.insert(deck)
+
+        do {
+            try modelContext.save()
+        } catch {
+            print("[LibraryScannerView] Failed to save deck: \(error)")
+        }
+
+        scannedBook = nil
+        barcodeScanner.reset()
+    }
+
     private func startSummarization(for result: DocumentReadingResult) {
         Task {
-            let output = await summarizer.summarize(result.extractedText)
+            let output = await summarizer.summarize(
+                result.extractedText,
+                pageImage: result.visionImage,
+                mode: captureMode
+            )
             if speakSummaries, let output = output {
                 VoiceFeedbackManager.shared.speakSummary(output.summary)
             }
@@ -1012,12 +1183,20 @@ struct LibraryScannerView: View {
         }
 
         // Get combined text and summarize
+        let firstPageImage = processor.capturedPageVisionImages.first
         let combinedText = processor.finishMultiPageSession()
         showPageCapturedOptions = false
 
-        // Summarize all pages together
+        // Summarize all pages together. Only the first page is attached — the
+        // combined OCR text still covers every page, and attaching N images
+        // multiplies token cost. See FOUNDATION_MODELS_UPGRADES.md item 1
+        // ("Follow-on work") for per-page attachments via ImageReference.
         Task {
-            let output = await summarizer.summarize(combinedText)
+            let output = await summarizer.summarize(
+                combinedText,
+                pageImage: firstPageImage,
+                mode: captureMode
+            )
             if speakSummaries, let output = output {
                 VoiceFeedbackManager.shared.speakSummary(output.summary)
             }
@@ -1074,11 +1253,15 @@ struct LibraryScannerView: View {
             title += " (\(processor.capturedPageCount) pages)"
         }
 
+        let visualDescription = summarizer.streamingVisualDescription
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
         let card = SummaryCard(
             title: title,
             summary: summarizer.streamingSummary,
             keyPoints: summarizer.streamingKeyPoints,
             sourceText: sourceText,
+            visualDescription: visualDescription.isEmpty ? nil : visualDescription,
             thumbnailData: thumbnailData
         )
 

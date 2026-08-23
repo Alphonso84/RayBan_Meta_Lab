@@ -45,10 +45,16 @@ class VoiceFeedbackManager: NSObject, ObservableObject {
     /// Queue of pending utterances
     private var utteranceQueue: [String] = []
 
+    /// Resolved Apple voice, cached to avoid re-enumerating installed voices on
+    /// every utterance. `cachedVoiceTag` records which setting produced it.
+    private var cachedVoice: AVSpeechSynthesisVoice?
+    private var cachedVoiceTag: String?
+
     // MARK: - User Settings
 
     @AppStorage("selectedProvider") private var selectedProvider = "apple"
     @AppStorage("openAIVoice") private var openAIVoice = "nova"
+    @AppStorage("appleVoiceIdentifier") private var appleVoiceIdentifier = VoiceFeedbackManager.bestAvailableVoiceTag
 
     // MARK: - Initialization
 
@@ -57,6 +63,7 @@ class VoiceFeedbackManager: NSObject, ObservableObject {
         synthesizer.delegate = self
         setupAudioSession()
         observeAudioRouteChanges()
+        observeAvailableVoiceChanges()
     }
 
     // MARK: - Audio Session Setup
@@ -101,6 +108,24 @@ class VoiceFeedbackManager: NSObject, ObservableObject {
             name: AVAudioSession.routeChangeNotification,
             object: nil
         )
+    }
+
+    /// Invalidate the cached voice when the user downloads or removes a voice
+    /// in Settings while the app is running.
+    private func observeAvailableVoiceChanges() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAvailableVoicesChange),
+            name: AVSpeechSynthesizer.availableVoicesDidChangeNotification,
+            object: nil
+        )
+    }
+
+    @objc private func handleAvailableVoicesChange(_ notification: Notification) {
+        Task { @MainActor in
+            cachedVoice = nil
+            cachedVoiceTag = nil
+        }
     }
 
     @objc private func handleRouteChange(_ notification: Notification) {
@@ -203,12 +228,9 @@ class VoiceFeedbackManager: NSObject, ObservableObject {
 
         let utterance = AVSpeechUtterance(string: text)
 
-        // Configure voice - try to get a high quality voice
-        if let voice = AVSpeechSynthesisVoice(identifier: "com.apple.voice.compact.en-US.Samantha") {
-            utterance.voice = voice
-        } else {
-            utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
-        }
+        // Configure voice from the user's preference. A nil voice is valid and
+        // means "use whatever the user picked in Spoken Content settings".
+        utterance.voice = resolvedVoice()
 
         // Configure speech parameters
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate
@@ -265,6 +287,84 @@ extension VoiceFeedbackManager: AVSpeechSynthesizerDelegate {
             self.isSpeaking = false
             self.utteranceQueue.removeAll()
         }
+    }
+}
+
+// MARK: - Apple Voice Selection
+extension VoiceFeedbackManager {
+
+    /// Stored in `appleVoiceIdentifier` to mean "pick the highest quality
+    /// English voice installed on this device".
+    static let bestAvailableVoiceTag = "best"
+
+    /// Stored in `appleVoiceIdentifier` to mean "defer to the voice the user
+    /// chose in Settings → Accessibility → Spoken Content".
+    static let systemDefaultVoiceTag = "system"
+
+    /// Voices that sound closest to Siri, in descending preference. Used only
+    /// to break ties between voices of equal quality.
+    private static let preferredVoiceNames = ["Ava", "Evan", "Zoe", "Nathan", "Noelle", "Samantha"]
+
+    /// English voices installed on this device, best quality first.
+    /// Enhanced and premium voices only appear here once the user downloads
+    /// them in Settings → Accessibility → Spoken Content → Voices.
+    static func availableEnglishVoices() -> [AVSpeechSynthesisVoice] {
+        AVSpeechSynthesisVoice.speechVoices()
+            .filter { $0.language.hasPrefix("en") && !$0.voiceTraits.contains(.isNoveltyVoice) }
+            .sorted { lhs, rhs in
+                if lhs.quality != rhs.quality {
+                    return lhs.quality.rawValue > rhs.quality.rawValue
+                }
+                if lhs.language != rhs.language {
+                    return lhs.language < rhs.language
+                }
+                return lhs.name < rhs.name
+            }
+    }
+
+    /// Highest quality English voice installed, preferring premium over
+    /// enhanced over the basic compact voices.
+    static func bestAvailableVoice() -> AVSpeechSynthesisVoice? {
+        func rank(_ voice: AVSpeechSynthesisVoice) -> (Int, Int, Int) {
+            let nameRank = preferredVoiceNames.firstIndex(of: voice.name)
+                .map { preferredVoiceNames.count - $0 } ?? 0
+            return (voice.quality.rawValue, voice.language == "en-US" ? 1 : 0, nameRank)
+        }
+
+        return availableEnglishVoices().max { rank($0) < rank($1) }
+            ?? AVSpeechSynthesisVoice(language: "en-US")
+    }
+
+    /// Human-readable label for a voice, including its quality tier.
+    static func displayName(for voice: AVSpeechSynthesisVoice) -> String {
+        let quality = switch voice.quality {
+        case .premium: "Premium"
+        case .enhanced: "Enhanced"
+        default: "Basic"
+        }
+        return "\(voice.name) — \(quality)"
+    }
+
+    /// The voice to speak with, honoring the user's setting.
+    /// Returns nil when the user wants the system default voice.
+    private func resolvedVoice() -> AVSpeechSynthesisVoice? {
+        let tag = appleVoiceIdentifier
+
+        guard tag != Self.systemDefaultVoiceTag else { return nil }
+
+        if let cachedVoiceTag, cachedVoiceTag == tag {
+            return cachedVoice
+        }
+
+        // A stored identifier can go stale if the user deletes a downloaded
+        // voice, so fall back to the best remaining voice rather than nil.
+        let voice = tag == Self.bestAvailableVoiceTag
+            ? Self.bestAvailableVoice()
+            : (AVSpeechSynthesisVoice(identifier: tag) ?? Self.bestAvailableVoice())
+
+        cachedVoice = voice
+        cachedVoiceTag = tag
+        return voice
     }
 }
 

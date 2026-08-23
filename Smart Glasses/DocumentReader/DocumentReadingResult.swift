@@ -73,8 +73,17 @@ struct DocumentReadingResult: Equatable {
     /// The detected document boundary (nil if no document detected)
     let documentBoundary: DocumentBoundary?
 
-    /// The perspective-corrected document image
+    /// The perspective-corrected document image, preprocessed for OCR
+    /// (grayscale and contrast-boosted when `preprocessImage` is enabled)
     let correctedImage: UIImage?
+
+    /// The perspective-corrected page rendered for the language model: full color,
+    /// no OCR preprocessing, downscaled to `PageVisionImage.defaultMaxDimension`.
+    ///
+    /// Kept separate from `correctedImage` because the grayscale + contrast pass
+    /// that helps Vision read text actively destroys the detail a vision model
+    /// needs to interpret diagrams and charts.
+    let visionImage: UIImage?
 
     /// The extracted text from the document
     let extractedText: String
@@ -87,6 +96,24 @@ struct DocumentReadingResult: Equatable {
 
     /// Time taken to process in milliseconds
     let processingTimeMs: Double
+
+    init(
+        documentBoundary: DocumentBoundary?,
+        correctedImage: UIImage?,
+        visionImage: UIImage? = nil,
+        extractedText: String,
+        textBlocks: [RecognizedTextBlock],
+        timestamp: Date,
+        processingTimeMs: Double
+    ) {
+        self.documentBoundary = documentBoundary
+        self.correctedImage = correctedImage
+        self.visionImage = visionImage
+        self.extractedText = extractedText
+        self.textBlocks = textBlocks
+        self.timestamp = timestamp
+        self.processingTimeMs = processingTimeMs
+    }
 
     /// Whether a document was detected
     var hasDocument: Bool {
@@ -101,6 +128,36 @@ struct DocumentReadingResult: Equatable {
     /// Number of text blocks
     var textBlockCount: Int {
         textBlocks.count
+    }
+
+    /// Whether the picture alone is enough, with no usable OCR text.
+    ///
+    /// True only for whiteboards: marker handwriting is where
+    /// `VNRecognizeTextRequest` is weakest, so a board holding a diagram and
+    /// four words routinely yields no text at all — yet it is exactly what the
+    /// user meant to capture, and the model can read it from the image.
+    ///
+    /// `visionSupported` defaults to asking the model and exists so tests can pin
+    /// it: the real value depends on the on-device model variant, which differs
+    /// between devices on the same OS.
+    func canStandOnImageAlone(
+        in mode: CaptureMode,
+        visionSupported: Bool = PageVisionPrompt.isVisionSupported
+    ) -> Bool {
+        mode == .whiteboard && visionImage != nil && visionSupported
+    }
+
+    /// Whether this capture is worth sending to the summarizer.
+    ///
+    /// The single source of truth for that decision. It previously lived in two
+    /// places — the processor's acceptance check and the scanner view's
+    /// summarization trigger — which drifted apart and left image-only
+    /// whiteboard captures accepted but never summarized.
+    func isSummarizable(
+        in mode: CaptureMode,
+        visionSupported: Bool = PageVisionPrompt.isVisionSupported
+    ) -> Bool {
+        hasText || canStandOnImageAlone(in: mode, visionSupported: visionSupported)
     }
 
     /// Empty result (no document detected)
@@ -136,6 +193,79 @@ struct DocumentReadingResult: Equatable {
         let changeRatio = Double(lengthDiff) / Double(maxLength)
 
         return changeRatio > 0.1 || currentNormalized != otherNormalized
+    }
+}
+
+// MARK: - Capture Mode
+
+/// What the user is pointing the glasses at.
+///
+/// This is not cosmetic: each mode wants different image preprocessing, a
+/// different tolerance for failed boundary detection, and a different prompt.
+enum CaptureMode: String, CaseIterable, Identifiable {
+    /// A page or printed document. Rectangular, high contrast, boundary reliably
+    /// detected, OCR does most of the work.
+    case document
+
+    /// A whiteboard or flip chart. Often frameless against a light wall, so the
+    /// document detector usually finds nothing; marker colour carries meaning and
+    /// must survive to the model; handwriting means the image matters more than
+    /// the OCR text.
+    case whiteboard
+
+    /// A book barcode. Read by the model's barcode tool, not by the OCR pipeline.
+    case barcode
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .document: return "Document"
+        case .whiteboard: return "Whiteboard"
+        case .barcode: return "Book"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .document: return "doc.text"
+        case .whiteboard: return "rectangle.on.rectangle"
+        case .barcode: return "barcode.viewfinder"
+        }
+    }
+
+    /// Whether a detected rectangle is required before a capture can proceed.
+    ///
+    /// Whiteboards frequently have no detectable edge — a frameless board on a
+    /// white wall gives the segmentation request nothing to lock onto — so a
+    /// missing boundary must not block the capture.
+    var requiresDocumentBoundary: Bool {
+        self == .document
+    }
+
+    /// Whether this mode runs the OCR + summarization pipeline at all.
+    var usesTextPipeline: Bool {
+        self != .barcode
+    }
+}
+
+// MARK: - Recognized Barcode
+
+/// A barcode read directly by Vision.
+///
+/// Vision returns the payload itself, so the digits never depend on the
+/// language model — this works offline and on devices whose model variant has
+/// no vision capability.
+struct RecognizedBarcode: Equatable {
+    let payload: String
+    let symbology: String
+
+    /// Whether this is a book barcode.
+    ///
+    /// ISBN-13 is carried as an EAN-13 whose Bookland prefix is 978 or 979.
+    /// Anything else scanned off a product is a real barcode but not a book.
+    var isISBN: Bool {
+        symbology == "ean13" && (payload.hasPrefix("978") || payload.hasPrefix("979"))
     }
 }
 

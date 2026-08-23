@@ -130,20 +130,45 @@ class FlashcardGenerator: ObservableObject {
 
     private func generateWithAppleIntelligence(text: String, cardTitles: [String], count: Int) async {
         #if canImport(FoundationModels)
-        let availability = SystemLanguageModel.default.availability
-        guard case .available = availability else {
+        await generateWithAppleIntelligence(
+            text: text,
+            cardTitles: cardTitles,
+            count: count,
+            tier: AppleModelProvider.textTier(for: selectedProvider)
+        )
+        #else
+        flashcards = generateFallbackFlashcards(cardTitles: cardTitles, text: text, count: count)
+        progress = 1.0
+        state = flashcards.isEmpty ? .error("Foundation Models requires iOS 26+") : .complete
+        #endif
+    }
+
+    #if canImport(FoundationModels)
+
+    static let flashcardInstructions = """
+        You are a flashcard generator for study material. Each flashcard has a term or
+        question on the front and a complete but brief answer or explanation on the back,
+        and should test one concept clearly. Cover the most important concepts and vary
+        between definition, concept, and application questions.
+        """
+
+    /// Generate on a specific tier, retrying on-device if Private Cloud Compute
+    /// fails for a transient reason.
+    private func generateWithAppleIntelligence(
+        text: String,
+        cardTitles: [String],
+        count: Int,
+        tier: AppleModelTier
+    ) async {
+        guard let session = AppleModelProvider.makeSession(
+            tier: tier,
+            instructions: Self.flashcardInstructions
+        ) else {
             flashcards = generateFallbackFlashcards(cardTitles: cardTitles, text: text, count: count)
             progress = 1.0
             state = flashcards.isEmpty ? .error("Apple Intelligence not available") : .complete
             return
         }
-
-        let session = LanguageModelSession(instructions: """
-            You are a flashcard generator for study material. Each flashcard has a term or
-            question on the front and a complete but brief answer or explanation on the back,
-            and should test one concept clearly. Cover the most important concepts and vary
-            between definition, concept, and application questions.
-            """)
 
         let prompt = """
         Generate \(count) flashcards from this study material.
@@ -157,10 +182,17 @@ class FlashcardGenerator: ObservableObject {
 
         do {
             progress = 0.4
-            let response = try await session.respond(to: prompt, generating: GeneratedFlashcardSet.self)
+            // Choosing which concepts deserve a card, and phrasing a back that is
+            // brief but complete, benefits from deliberation when we are on PCC.
+            let generated = try await AppleModelProvider.respond(
+                session: session,
+                to: prompt,
+                generating: GeneratedFlashcardSet.self,
+                reasoning: tier == .privateCloudCompute
+            )
             progress = 0.8
 
-            let parsed = mapGeneratedFlashcards(response.content.flashcards, fallbackTitles: cardTitles)
+            let parsed = mapGeneratedFlashcards(generated.flashcards, fallbackTitles: cardTitles)
 
             if parsed.isEmpty {
                 flashcards = generateFallbackFlashcards(cardTitles: cardTitles, text: text, count: count)
@@ -172,16 +204,25 @@ class FlashcardGenerator: ObservableObject {
             state = .complete
         } catch {
             print("[FlashcardGenerator] Apple Intelligence error: \(error)")
+
+            if tier == .privateCloudCompute, AppleModelProvider.isRecoverablePCCError(error) {
+                print("[FlashcardGenerator] Private Cloud Compute failed; retrying on-device")
+                await generateWithAppleIntelligence(
+                    text: text,
+                    cardTitles: cardTitles,
+                    count: count,
+                    tier: .onDevice
+                )
+                return
+            }
+
             flashcards = generateFallbackFlashcards(cardTitles: cardTitles, text: text, count: count)
             progress = 1.0
             state = flashcards.isEmpty ? .error(error.localizedDescription) : .complete
         }
-        #else
-        flashcards = generateFallbackFlashcards(cardTitles: cardTitles, text: text, count: count)
-        progress = 1.0
-        state = flashcards.isEmpty ? .error("Foundation Models requires iOS 26+") : .complete
-        #endif
     }
+
+    #endif
 
     // MARK: - Mapping
 

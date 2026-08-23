@@ -572,7 +572,9 @@ class OpenAIProvider: LLMProvider {
             summary: summary,
             keyPoints: keyPoints,
             suggestedTitle: title,
-            documentType: docType
+            documentType: docType,
+            // This provider is text-only; page images are never sent to OpenAI.
+            visualDescription: ""
         )
     }
 

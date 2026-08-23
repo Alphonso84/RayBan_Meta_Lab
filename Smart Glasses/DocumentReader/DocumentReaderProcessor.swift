@@ -50,9 +50,26 @@ class DocumentReaderProcessor: ObservableObject {
     /// Auto-capture status message
     @Published var autoCaptureStatus: String = "Point at a document"
 
+    /// Idle prompt for the current mode.
+    ///
+    /// Whiteboard capture is usually manual — a frameless board gives the
+    /// detector nothing to lock onto, so auto-capture is best-effort and the
+    /// prompt should not imply the app is waiting to find an edge.
+    var idlePrompt: String {
+        switch captureMode {
+        case .document: return "Point at a document"
+        case .whiteboard: return "Point at the board and tap capture"
+        case .barcode: return "Point at the book's barcode"
+        }
+    }
+
     /// Signals that auto-capture detected a stable document and photo capture should be triggered
     /// LibraryScannerView observes this and calls WearablesManager.captureDocumentPhoto()
     @Published var shouldTriggerPhotoCapture: Bool = false
+
+    /// A barcode Vision read from the live preview, published once the same
+    /// payload has held steady for `stableBarcodeFramesRequired` frames.
+    @Published var recognizedBarcode: RecognizedBarcode?
 
     // MARK: - Multi-Page Scanning Properties
 
@@ -68,10 +85,18 @@ class DocumentReaderProcessor: ObservableObject {
     /// Thumbnails from captured pages
     @Published var capturedPageThumbnails: [UIImage] = []
 
+    /// Language-model-ready page images from captured pages, parallel to
+    /// `capturedPageThumbnails`. Only pages that produced one are included.
+    @Published var capturedPageVisionImages: [UIImage] = []
+
     /// Text from each individual page (for review)
     @Published var pageTexts: [String] = []
 
     // MARK: - Configuration
+
+    /// What the user is pointing at. Drives whether a detected boundary is
+    /// required, and which preprocessing profile applies.
+    @Published var captureMode: CaptureMode = .document
 
     /// Interval between document captures (seconds)
     var captureInterval: TimeInterval = 5.0
@@ -158,6 +183,12 @@ class DocumentReaderProcessor: ObservableObject {
     /// Last stability level for haptic feedback
     private var lastStabilityLevel: Int = 0
 
+    /// Most recent barcode payload, for confirming a read across frames
+    private var lastBarcodePayload: String?
+
+    /// Consecutive frames that produced `lastBarcodePayload`
+    private var stableBarcodeCount: Int = 0
+
     // MARK: - Public Methods
 
     /// Start continuous document scanning
@@ -170,8 +201,9 @@ class DocumentReaderProcessor: ObservableObject {
 
         // Start the timer for periodic captures
         scanTimer = Timer.scheduledTimer(withTimeInterval: captureInterval, repeats: true) { [weak self] _ in
+            guard let self else { return }
             Task { @MainActor in
-                self?.processLatestFrame()
+                self.processLatestFrame()
             }
         }
 
@@ -304,6 +336,7 @@ class DocumentReaderProcessor: ObservableObject {
         capturedPageCount = 0
         accumulatedText = ""
         capturedPageThumbnails = []
+        capturedPageVisionImages = []
         pageTexts = []
         errorMessage = nil
         state = .scanning
@@ -325,6 +358,10 @@ class DocumentReaderProcessor: ObservableObject {
         // Store thumbnail
         if let thumbnail = result.correctedImage {
             capturedPageThumbnails.append(thumbnail)
+        }
+
+        if let visionImage = result.visionImage {
+            capturedPageVisionImages.append(visionImage)
         }
 
         // Play audio feedback for page capture
@@ -359,6 +396,7 @@ class DocumentReaderProcessor: ObservableObject {
         capturedPageCount = 0
         accumulatedText = ""
         capturedPageThumbnails = []
+        capturedPageVisionImages = []
         pageTexts = []
     }
 
@@ -386,7 +424,7 @@ class DocumentReaderProcessor: ObservableObject {
         stabilityProgress = 0
         isDocumentStable = false
         detectedBoundary = nil
-        autoCaptureStatus = "Point at a document"
+        autoCaptureStatus = idlePrompt
         state = .scanning
         errorMessage = nil
     }
@@ -414,6 +452,14 @@ class DocumentReaderProcessor: ObservableObject {
         // Throttle detection to every Nth frame
         frameCounter += 1
         guard frameCounter % detectionFrameSkip == 0 else { return }
+
+        // Barcodes take a different path entirely: Vision returns the payload
+        // itself, so there is nothing to capture at high resolution and no model
+        // round trip to make.
+        if captureMode == .barcode {
+            detectBarcode(in: image)
+            return
+        }
 
         latestFrame = image
         isDetecting = true
@@ -493,7 +539,9 @@ class DocumentReaderProcessor: ObservableObject {
                 // First detection
                 stableFrameCount = 1
                 stabilityProgress = Float(stableFrameCount) / Float(stableFramesRequired)
-                autoCaptureStatus = "Document detected - hold steady"
+                autoCaptureStatus = captureMode == .whiteboard
+                    ? "Board detected - hold steady"
+                    : "Document detected - hold steady"
                 lastStabilityLevel = 0
             }
 
@@ -510,10 +558,79 @@ class DocumentReaderProcessor: ObservableObject {
             stableFrameCount = 0
             stabilityProgress = 0
             isDocumentStable = false
-            autoCaptureStatus = "Point at a document"
+            autoCaptureStatus = idlePrompt
             state = .scanning
             lastStabilityLevel = 0
         }
+    }
+
+    // MARK: - Barcode Detection
+
+    /// Payloads must repeat this many consecutive reads before being accepted.
+    ///
+    /// Vision occasionally misreads a partially-occluded or motion-blurred
+    /// barcode, and a wrong ISBN silently creates the wrong deck. Requiring the
+    /// same digits twice costs a fraction of a second and removes that class of
+    /// error entirely.
+    private let stableBarcodeFramesRequired = 2
+
+    /// Read a barcode straight out of the live preview.
+    private func detectBarcode(in image: UIImage) {
+        guard recognizedBarcode == nil else { return }
+        guard let cgImage = image.cgImage else { return }
+
+        isDetecting = true
+
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.isDetecting = false }
+
+            var request = DetectBarcodesRequest()
+            // Books only: EAN-13 carries ISBN-13, and the others are close enough
+            // cousins to be worth accepting. Narrowing the set makes detection
+            // faster and stops random product codes from matching.
+            request.symbologies = [.ean13, .ean8, .upce]
+
+            guard let observations = try? await request.perform(on: cgImage),
+                  let best = observations.max(by: { $0.confidence < $1.confidence }),
+                  let payload = best.payloadString,
+                  !payload.isEmpty
+            else {
+                self.resetBarcodeStability()
+                return
+            }
+
+            self.handleBarcodeRead(payload: payload, symbology: "\(best.symbology)")
+        }
+    }
+
+    private func handleBarcodeRead(payload: String, symbology: String) {
+        if payload == lastBarcodePayload {
+            stableBarcodeCount += 1
+        } else {
+            lastBarcodePayload = payload
+            stableBarcodeCount = 1
+            autoCaptureStatus = "Reading barcode…"
+        }
+
+        guard stableBarcodeCount >= stableBarcodeFramesRequired else { return }
+
+        recognizedBarcode = RecognizedBarcode(payload: payload, symbology: symbology)
+        autoCaptureStatus = "Barcode found"
+        voiceFeedback.captureSuccess()
+        print("[DocumentReader] Barcode \(symbology): \(payload)")
+    }
+
+    private func resetBarcodeStability() {
+        lastBarcodePayload = nil
+        stableBarcodeCount = 0
+    }
+
+    /// Clear a read so scanning can resume — called once the deck sheet closes.
+    func clearRecognizedBarcode() {
+        recognizedBarcode = nil
+        resetBarcodeStability()
+        autoCaptureStatus = idlePrompt
     }
 
     /// Calculate movement between two boundaries (returns max corner movement)
@@ -561,7 +678,7 @@ class DocumentReaderProcessor: ObservableObject {
         stabilityProgress = 0
         isDocumentStable = false
         detectedBoundary = nil
-        autoCaptureStatus = "Point at a document"
+        autoCaptureStatus = idlePrompt
         isAutoCaptureEnabled = true
         shouldTriggerPhotoCapture = false
         state = .scanning
@@ -578,6 +695,12 @@ class DocumentReaderProcessor: ObservableObject {
         errorMessage = nil
         let startTime = Date()
 
+        // Read the isolated configuration here, on the main actor, rather than
+        // from inside the background closure.
+        let mode = captureMode
+        let ocrDimension = targetProcessingDimension
+        let shouldPreprocess = preprocessImage
+
         processingQueue.async { [weak self] in
             guard let self = self else { return }
 
@@ -592,7 +715,11 @@ class DocumentReaderProcessor: ObservableObject {
 
             // Step 1: Detect document boundaries
             self.detectDocument(cgImage: cgImage) { boundary in
-                guard let boundary = boundary else {
+                // A whiteboard on a light wall usually gives the segmentation
+                // request no edge to lock onto. Rather than refuse the capture,
+                // fall back to the uncropped frame — the model reads an
+                // un-deskewed board far better than it reads nothing.
+                if case .none = boundary, mode.requiresDocumentBoundary {
                     Task { @MainActor in
                         self.isProcessing = false
                         self.state = .idle
@@ -614,17 +741,47 @@ class DocumentReaderProcessor: ObservableObject {
                     self.state = .processingDocument
                 }
 
-                // Step 2: Apply perspective correction
-                guard let correctedImage = self.applyPerspectiveCorrection(
-                    cgImage: cgImage,
-                    boundary: boundary
-                ) else {
-                    Task { @MainActor in
-                        self.isProcessing = false
-                        self.state = .error("Failed to correct perspective")
-                        self.errorMessage = "Failed to correct perspective"
+                // Step 2: Apply perspective correction when there is a boundary
+                // to correct against; otherwise take the frame as shot.
+                let correctedImage: CGImage
+                let visionCGImage: CGImage?
+
+                if let boundary {
+                    guard let corrected = self.applyPerspectiveCorrection(
+                        cgImage: cgImage,
+                        boundary: boundary
+                    ) else {
+                        Task { @MainActor in
+                            self.isProcessing = false
+                            self.state = .error("Failed to correct perspective")
+                            self.errorMessage = "Failed to correct perspective"
+                        }
+                        return
                     }
-                    return
+                    correctedImage = corrected
+
+                    // Step 2b: Render a second copy for the language model — full
+                    // color, no OCR preprocessing, and small enough to be a cheap
+                    // attachment. Rendered from the original pixels rather than
+                    // downscaled from `correctedImage`, which has already been
+                    // flattened to grayscale.
+                    visionCGImage = self.applyPerspectiveCorrection(
+                        cgImage: cgImage,
+                        boundary: boundary,
+                        targetDimension: PageVisionImage.defaultMaxDimension,
+                        preprocess: false
+                    )
+                } else {
+                    correctedImage = self.scaledImage(
+                        cgImage,
+                        targetDimension: ocrDimension,
+                        preprocess: shouldPreprocess
+                    ) ?? cgImage
+                    visionCGImage = self.scaledImage(
+                        cgImage,
+                        targetDimension: PageVisionImage.defaultMaxDimension,
+                        preprocess: false
+                    )
                 }
 
                 Task { @MainActor in
@@ -638,6 +795,7 @@ class DocumentReaderProcessor: ObservableObject {
                         let result = DocumentReadingResult(
                             documentBoundary: boundary,
                             correctedImage: UIImage(cgImage: correctedImage),
+                            visionImage: visionCGImage.map { UIImage(cgImage: $0) },
                             extractedText: fullText,
                             textBlocks: textBlocks,
                             timestamp: Date(),
@@ -649,22 +807,30 @@ class DocumentReaderProcessor: ObservableObject {
                         let charCount = fullText.count
                         let hasEnoughText = lineCount >= self.minimumTextLines || charCount >= self.minimumCharacters
 
+                        let imageCanStandAlone = result.canStandOnImageAlone(in: mode)
+
                         self.latestResult = result
                         self.isProcessing = false
 
-                        if !result.hasText {
+                        if !result.hasText && !imageCanStandAlone {
                             // No text at all
                             self.state = .idle
                             self.errorMessage = "No text found in document"
+                            self.autoCaptureStatus = self.idlePrompt
                             self.voiceFeedback.captureFailedInsufficientText()
-                        } else if !hasEnoughText {
+                        } else if !hasEnoughText && !imageCanStandAlone {
                             // Some text, but not enough
                             self.state = .idle
                             self.errorMessage = "Not enough text detected. Try moving closer."
+                            self.autoCaptureStatus = self.idlePrompt
                             self.voiceFeedback.captureFailedInsufficientText()
                         } else {
-                            // Success - enough text captured
+                            // Success — enough text, or a whiteboard the model can read
                             self.state = .complete
+                            // Clear the transient "Capturing photo..." text, which
+                            // otherwise sticks because `autoCaptureDidComplete()`
+                            // deliberately holds state when a capture succeeded.
+                            self.autoCaptureStatus = "Captured"
                             self.voiceFeedback.captureSuccess()
                         }
                     }
@@ -718,7 +884,21 @@ class DocumentReaderProcessor: ObservableObject {
     }
 
     /// Apply perspective correction to extract the document
-    private func applyPerspectiveCorrection(cgImage: CGImage, boundary: DocumentBoundary) -> CGImage? {
+    ///
+    /// - Parameters:
+    ///   - targetDimension: Longest-side dimension of the rendered output. Defaults
+    ///     to `targetProcessingDimension`, the size Vision reads text best at.
+    ///   - preprocess: Whether to apply the OCR preprocessing pass (grayscale and
+    ///     contrast). Pass `false` for images destined for the language model —
+    ///     that pass destroys the detail needed to interpret figures.
+    private func applyPerspectiveCorrection(
+        cgImage: CGImage,
+        boundary: DocumentBoundary,
+        targetDimension: CGFloat? = nil,
+        preprocess: Bool? = nil
+    ) -> CGImage? {
+        let targetDimension = targetDimension ?? targetProcessingDimension
+        let preprocess = preprocess ?? preprocessImage
         let ciImage = CIImage(cgImage: cgImage)
         let imageSize = ciImage.extent.size
 
@@ -768,7 +948,7 @@ class DocumentReaderProcessor: ObservableObject {
         // Vision works best with images around 2000-3000px on the longer side
         let maxDimension = max(outputWidth, outputHeight)
         if maxDimension > 0 {
-            let scale = targetProcessingDimension / maxDimension
+            let scale = targetDimension / maxDimension
             if scale != 1.0 {
                 // Use Lanczos for high-quality scaling
                 if let lanczosFilter = CIFilter(name: "CILanczosScaleTransform") {
@@ -783,7 +963,7 @@ class DocumentReaderProcessor: ObservableObject {
         }
 
         // Apply preprocessing if enabled
-        if preprocessImage {
+        if preprocess {
             processedImage = preprocessForOCR(processedImage)
         }
 
@@ -794,6 +974,37 @@ class DocumentReaderProcessor: ObservableObject {
 
         print("[DocumentReader] Processed image size: \(result.width)x\(result.height)")
         return result
+    }
+
+    /// Scale (and optionally preprocess) a frame without cropping it.
+    ///
+    /// Used when no boundary was detected — whiteboard captures usually have no
+    /// findable edge, so the whole frame is the subject.
+    private func scaledImage(
+        _ cgImage: CGImage,
+        targetDimension: CGFloat,
+        preprocess: Bool
+    ) -> CGImage? {
+        var image = CIImage(cgImage: cgImage)
+
+        let maxDimension = max(image.extent.width, image.extent.height)
+        if maxDimension > 0 {
+            let scale = targetDimension / maxDimension
+            if scale != 1.0, let lanczos = CIFilter(name: "CILanczosScaleTransform") {
+                lanczos.setValue(image, forKey: kCIInputImageKey)
+                lanczos.setValue(scale, forKey: kCIInputScaleKey)
+                lanczos.setValue(1.0, forKey: kCIInputAspectRatioKey)
+                if let output = lanczos.outputImage {
+                    image = output
+                }
+            }
+        }
+
+        if preprocess {
+            image = preprocessForOCR(image)
+        }
+
+        return ciContext.createCGImage(image, from: image.extent)
     }
 
     /// Preprocess image for optimal OCR accuracy
