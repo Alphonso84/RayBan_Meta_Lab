@@ -63,6 +63,22 @@ struct MainTabView: View {
             // This task runs when selectedTab changes and cancels when it changes again
             await handleStreamForTab(navigationState.selectedTab)
         }
+        .onChange(of: navigationState.selectedTab) { _, _ in
+            // Speech outlives the view that started it: both the synthesizer and
+            // the OpenAI audio player belong to a singleton, so leaving a screen
+            // does not stop it.
+            //
+            // Handled here rather than in each view's `onDisappear` because that
+            // fires inconsistently for a view sitting inside an inactive tab's
+            // navigation stack, and because a per-view list is one more thing to
+            // forget — `LibraryScannerView` had already forgotten it, which is
+            // what left a summary reading aloud after switching tabs.
+            //
+            // Deliberately not tied to backgrounding: the app declares the
+            // `audio` background mode so summaries can keep playing through the
+            // glasses with the phone pocketed.
+            VoiceFeedbackManager.shared.stopSpeaking()
+        }
     }
 
     /// Manage stream based on current tab

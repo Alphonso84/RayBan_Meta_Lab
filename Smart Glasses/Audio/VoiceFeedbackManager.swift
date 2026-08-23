@@ -42,6 +42,14 @@ class VoiceFeedbackManager: NSObject, ObservableObject {
     /// Audio player for OpenAI TTS playback
     private var audioPlayer: AVAudioPlayer?
 
+    /// Bumped by every `stopSpeaking()`.
+    ///
+    /// OpenAI speech is fetched over the network before anything can play, and
+    /// a stop arriving during that window has nothing to cancel — the request
+    /// would come back afterwards and start talking. Work captures the value it
+    /// started under and discards its result if it no longer matches.
+    private var speechGeneration = 0
+
     /// Queue of pending utterances
     private var utteranceQueue: [String] = []
 
@@ -204,6 +212,8 @@ class VoiceFeedbackManager: NSObject, ObservableObject {
 
     /// Stop any current speech (Apple TTS or OpenAI audio)
     func stopSpeaking() {
+        // Invalidate any OpenAI request still in flight before tearing down.
+        speechGeneration &+= 1
         synthesizer.stopSpeaking(at: .immediate)
         audioPlayer?.stop()
         audioPlayer = nil
@@ -389,10 +399,19 @@ extension VoiceFeedbackManager {
         guard !isSpeaking else { return }
         isSpeaking = true
 
+        let generation = speechGeneration
+
         Task {
             do {
                 let provider = OpenAIProvider()
                 let audioData = try await provider.synthesizeSpeech(text: text, voice: openAIVoice)
+
+                // Stopped while the audio was being fetched — starting playback
+                // now would talk over whatever the user moved on to.
+                guard generation == self.speechGeneration else {
+                    print("[VoiceFeedback] Discarding OpenAI TTS: speech was stopped")
+                    return
+                }
 
                 let player = try AVAudioPlayer(data: audioData)
                 self.audioPlayer = player
@@ -401,6 +420,8 @@ extension VoiceFeedbackManager {
 
                 print("[VoiceFeedback] Playing OpenAI TTS (\(openAIVoice))")
             } catch {
+                guard generation == self.speechGeneration else { return }
+
                 print("[VoiceFeedback] OpenAI TTS failed: \(error.localizedDescription), falling back to Apple TTS")
                 self.isSpeaking = false
                 self.speak(text)
