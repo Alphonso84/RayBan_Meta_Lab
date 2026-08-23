@@ -183,6 +183,15 @@ class StreamingSummarizer: ObservableObject {
         AppleModelProvider.textTier(for: selectedProvider)
     }
 
+    /// What is actually generating the current summary.
+    ///
+    /// Deliberately not the same as `selectedProvider`, because the selection is
+    /// not always honored: a page image is forced on-device even when Apple
+    /// Cloud is chosen, a failed PCC round trip retries locally, and OpenAI is
+    /// skipped when it has no API key. Progress text reads this so it reports
+    /// what ran rather than what was asked for.
+    @Published private(set) var activeProvider: SummarizationProvider = .onDevice
+
     // MARK: - Initialization
 
     init() {
@@ -258,8 +267,13 @@ class StreamingSummarizer: ObservableObject {
 
         // Route to OpenAI if selected and available
         if selectedProvider == "openai", await openAIProvider.isAvailable {
+            activeProvider = .openAI
             return await summarizeWithOpenAI(text)
         }
+
+        // Anything past here runs on an Apple model, even if OpenAI was selected
+        // but unusable.
+        activeProvider = preferredTextTier.provider
 
         #if canImport(FoundationModels)
         guard isAvailable else {
@@ -285,6 +299,7 @@ class StreamingSummarizer: ObservableObject {
         // stays local regardless of the selected provider. PCC is the big-context
         // tier for text, not a general replacement for the local model.
         let tier: AppleModelTier = visionCGImage != nil ? .onDevice : preferredTextTier
+        activeProvider = tier.provider
 
         do {
             return try await runDocumentSummarization(
@@ -299,6 +314,7 @@ class StreamingSummarizer: ObservableObject {
             // giving the user an error mid-scan.
             if tier == .privateCloudCompute, AppleModelProvider.isRecoverablePCCError(error) {
                 print("[StreamingSummarizer] Private Cloud Compute failed (\(error)); retrying on-device")
+                activeProvider = .onDevice
                 clearStreamedFields()
                 if let output = try? await runDocumentSummarization(
                     text: text,
@@ -531,8 +547,11 @@ class StreamingSummarizer: ObservableObject {
 
         // Route to OpenAI if selected and available
         if selectedProvider == "openai", await openAIProvider.isAvailable {
+            activeProvider = .openAI
             return await summarizeDeckWithOpenAI(cardSummaries: cardSummaries, cardCount: cardCount, deckTitle: deckTitle)
         }
+
+        activeProvider = preferredTextTier.provider
 
         #if canImport(FoundationModels)
         guard isAvailable else {
@@ -559,6 +578,7 @@ class StreamingSummarizer: ObservableObject {
                 return output
             }
             print("[StreamingSummarizer] Private Cloud Compute deck summary failed; falling back on-device")
+            activeProvider = .onDevice
             clearStreamedFields()
         }
 

@@ -707,7 +707,7 @@ struct LibraryScannerView: View {
             default: return "Processing..."
             }
         case .preparing: return "Getting ready..."
-        case .summarizing: return "Using on-device AI"
+        case .summarizing: return summarizer.activeProvider.summarizingLabel
         case .complete: return "Tap Save to keep this card"
         case .error: return summarizer.errorMessage ?? "Try again"
         }

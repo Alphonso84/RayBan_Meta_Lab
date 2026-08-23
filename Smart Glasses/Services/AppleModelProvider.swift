@@ -39,6 +39,38 @@ enum SummarizationProvider: String {
     init(storedValue: String) {
         self = SummarizationProvider(rawValue: storedValue) ?? .onDevice
     }
+
+    /// Name shown to the user. Matches the Settings picker exactly, so progress
+    /// text and the setting that drives it cannot describe the same thing
+    /// differently.
+    var displayName: String {
+        switch self {
+        case .onDevice: return "On-Device"
+        case .privateCloudCompute: return "Apple Cloud"
+        case .openAI: return "OpenAI"
+        }
+    }
+
+    /// Progress label while this provider is generating.
+    ///
+    /// Written out per case rather than interpolated from `displayName`, which
+    /// would produce "Using OpenAI AI".
+    var summarizingLabel: String {
+        switch self {
+        case .onDevice: return "Using on-device AI"
+        case .privateCloudCompute: return "Using Apple Cloud"
+        case .openAI: return "Using OpenAI"
+        }
+    }
+}
+
+extension AppleModelTier {
+    var provider: SummarizationProvider {
+        switch self {
+        case .onDevice: return .onDevice
+        case .privateCloudCompute: return .privateCloudCompute
+        }
+    }
 }
 
 #if canImport(FoundationModels)
