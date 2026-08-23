@@ -357,3 +357,42 @@ Visual states:
 | Modify auto-capture timing | DocumentReaderProcessor.stableFramesRequired |
 | Change PDF layout | PDFGenerator |
 | Add new tab | MainTabView |
+
+## Tests
+
+`Smart GlassesTests` is a Swift Testing bundle hosted by the app. It uses a
+**file-system synchronized group**, so a new `.swift` file dropped in the folder
+is picked up automatically — there is nothing to register in the project file.
+
+```
+xcodebuild test -project "Smart Glasses.xcodeproj" -scheme "Smart Glasses" \
+  -destination 'platform=iOS Simulator,id=<an iOS 27 sim UDID>'
+```
+
+Target simulators by UDID: several share the name "iPhone 17 Pro" across iOS
+17/26/27 and `name=` resolves to one that fails the iOS 27 deployment target.
+
+| Suite | Covers |
+|-------|--------|
+| `CaptureRulesTests` | `isSummarizable` / `canStandOnImageAlone`, `CaptureMode`, ISBN detection |
+| `SearchMatchingTests` | `StudyEntityStore.searchTerms` / `matches` — Siri and Spotlight fallback lookup |
+| `TokenBudgetTests` | Budget arithmetic and greedy batch packing |
+| `DocumentBoundaryTests` | Vision (bottom-left) → SwiftUI (top-left) coordinate conversion |
+| `DeckTests` | Summary/flashcard staleness, aggregation, hex colors |
+| `SummaryCardTests` | Spoken text, preview truncation |
+| `StudyEntityTests` | What Spotlight is given, including the deliberate `sourceText` exclusion |
+| `PageVisionImageTests` | Attachment downscaling |
+
+Two seams exist purely for tests, both with defaults so callers are unaffected:
+`DocumentReadingResult.isSummarizable(in:visionSupported:)` and
+`TokenBudget.pack(_:into:measuring:)`. The real values depend on the device's
+model variant and tokenizer, which vary between devices on the same OS.
+
+Tests must stay free of model inference, network, and glasses hardware.
+
+## Reference Docs
+
+| File | Read it before |
+|------|----------------|
+| `AGENTS.md` | Touching any MWDAT SDK code — session lifecycle, `Stream`/`Camera` setup, photo capture, permissions/registration, MockDeviceKit, Display, Info.plist keys. Verbatim copy of the upstream [meta-wearables-dat-ios](https://github.com/facebook/meta-wearables-dat-ios) AGENTS.md; treat it as the API source of truth over memory. |
+| `AppleFoundationModels.md` | Changing summarization / guided generation in `StreamingSummarizer`. |

@@ -12,14 +12,30 @@
 		8948EAA52EE8A7990086B7D1 /* MWDATMockDevice in Frameworks */ = {isa = PBXBuildFile; productRef = 8948EAA42EE8A7990086B7D1 /* MWDATMockDevice */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		AA10DE510000000000000008 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 8948EA812EE8A23D0086B7D1 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 8948EA882EE8A23D0086B7D1;
+			remoteInfo = "Smart Glasses";
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
 		8948EA892EE8A23D0086B7D1 /* Smart Glasses.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Smart Glasses.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA10DE510000000000000001 /* Smart GlassesTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Smart GlassesTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		8948EA8B2EE8A23D0086B7D1 /* Smart Glasses */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = "Smart Glasses";
+			sourceTree = "<group>";
+		};
+		AA10DE510000000000000002 /* Smart GlassesTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "Smart GlassesTests";
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -35,6 +51,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		AA10DE510000000000000005 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -42,6 +65,7 @@
 			isa = PBXGroup;
 			children = (
 				8948EA8B2EE8A23D0086B7D1 /* Smart Glasses */,
+				AA10DE510000000000000002 /* Smart GlassesTests */,
 				8948EA8A2EE8A23D0086B7D1 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -50,6 +74,7 @@
 			isa = PBXGroup;
 			children = (
 				8948EA892EE8A23D0086B7D1 /* Smart Glasses.app */,
+				AA10DE510000000000000001 /* Smart GlassesTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -82,6 +107,29 @@
 			productReference = 8948EA892EE8A23D0086B7D1 /* Smart Glasses.app */;
 			productType = "com.apple.product-type.application";
 		};
+		AA10DE510000000000000003 /* Smart GlassesTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AA10DE510000000000000009 /* Build configuration list for PBXNativeTarget "Smart GlassesTests" */;
+			buildPhases = (
+				AA10DE510000000000000004 /* Sources */,
+				AA10DE510000000000000005 /* Frameworks */,
+				AA10DE510000000000000006 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				AA10DE510000000000000007 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				AA10DE510000000000000002 /* Smart GlassesTests */,
+			);
+			name = "Smart GlassesTests";
+			packageProductDependencies = (
+			);
+			productName = "Smart GlassesTests";
+			productReference = AA10DE510000000000000001 /* Smart GlassesTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -94,6 +142,10 @@
 				TargetAttributes = {
 					8948EA882EE8A23D0086B7D1 = {
 						CreatedOnToolsVersion = 26.0;
+					};
+					AA10DE510000000000000003 = {
+						CreatedOnToolsVersion = 27.0;
+						TestTargetID = 8948EA882EE8A23D0086B7D1;
 					};
 				};
 			};
@@ -115,12 +167,20 @@
 			projectRoot = "";
 			targets = (
 				8948EA882EE8A23D0086B7D1 /* Smart Glasses */,
+				AA10DE510000000000000003 /* Smart GlassesTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		8948EA872EE8A23D0086B7D1 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AA10DE510000000000000006 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -137,7 +197,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		AA10DE510000000000000004 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		AA10DE510000000000000007 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 8948EA882EE8A23D0086B7D1 /* Smart Glasses */;
+			targetProxy = AA10DE510000000000000008 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		8948EA922EE8A23E0086B7D1 /* Debug */ = {
@@ -329,6 +404,52 @@
 			};
 			name = Release;
 		};
+		AA10DE51000000000000000A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 6257XTCRBF;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "AlphonsoSensley.Smart-GlassesTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Smart Glasses.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Smart Glasses";
+			};
+			name = Debug;
+		};
+		AA10DE51000000000000000B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 6257XTCRBF;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "AlphonsoSensley.Smart-GlassesTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Smart Glasses.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Smart Glasses";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -346,6 +467,15 @@
 			buildConfigurations = (
 				8948EA952EE8A23E0086B7D1 /* Debug */,
 				8948EA962EE8A23E0086B7D1 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AA10DE510000000000000009 /* Build configuration list for PBXNativeTarget "Smart GlassesTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA10DE51000000000000000A /* Debug */,
+				AA10DE51000000000000000B /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
