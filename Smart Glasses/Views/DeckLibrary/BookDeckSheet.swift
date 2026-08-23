@@ -72,3 +72,29 @@ struct BookDeckSheet: View {
         .presentationDetents([.medium])
     }
 }
+
+#Preview("Recognized title") {
+    BookDeckSheet(
+        book: PreviewSamples.scannedBook,
+        onCreate: { _ in },
+        onCancel: {}
+    )
+}
+
+#Preview("ISBN only") {
+    // The model is told never to guess a title from a number, so an
+    // unrecognized ISBN is the common case and needs its own footer wording.
+    BookDeckSheet(
+        book: ScannedBookCode(code: "9781491949863", isISBN: true, recognizedTitle: ""),
+        onCreate: { _ in },
+        onCancel: {}
+    )
+}
+
+#Preview("Not a book") {
+    BookDeckSheet(
+        book: ScannedBookCode(code: "036000291452", isISBN: false, recognizedTitle: ""),
+        onCreate: { _ in },
+        onCancel: {}
+    )
+}

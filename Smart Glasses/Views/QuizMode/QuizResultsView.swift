@@ -157,3 +157,30 @@ struct QuizResultsView: View {
         }
     }
 }
+
+#Preview("Perfect score") {
+    QuizResultsView(
+        result: PreviewSamples.quizResult(correct: PreviewSamples.quizQuestions.count),
+        deckColor: .green,
+        onTryAgain: {},
+        onDone: {}
+    )
+}
+
+#Preview("Partial score") {
+    QuizResultsView(
+        result: PreviewSamples.quizResult(correct: 2),
+        deckColor: .blue,
+        onTryAgain: {},
+        onDone: {}
+    )
+}
+
+#Preview("All wrong") {
+    QuizResultsView(
+        result: PreviewSamples.quizResult(correct: 0),
+        deckColor: .purple,
+        onTryAgain: {},
+        onDone: {}
+    )
+}

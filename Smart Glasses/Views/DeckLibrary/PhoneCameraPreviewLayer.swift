@@ -36,3 +36,12 @@ struct PhoneCameraPreviewLayer: UIViewRepresentable {
         }
     }
 }
+
+/// Renders black: an `AVCaptureSession` that was never started has no frames to
+/// show, and previews have no camera to start it with. Useful for checking
+/// layout and sizing around the preview layer, not the image itself.
+#Preview {
+    PhoneCameraPreviewLayer(session: AVCaptureSession())
+        .frame(width: 320, height: 480)
+        .background(.black)
+}

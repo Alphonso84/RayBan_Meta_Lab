@@ -352,5 +352,8 @@ struct FlashcardShareSheet: UIViewControllerRepresentable {
 }
 
 #Preview {
-    Text("Preview requires SummaryDeck model")
+    // The sample deck ships with cached flashcards, so `startStudy()` loads
+    // them instead of calling a language model the preview cannot run.
+    FlashcardView(deck: PreviewSamples.deck)
+        .modelContainer(PreviewSamples.container)
 }

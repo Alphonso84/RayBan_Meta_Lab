@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import SwiftData
 
 struct QuizView: View {
     let deck: SummaryDeck
@@ -335,4 +336,15 @@ struct QuizView: View {
         generator.reset()
         startQuiz()
     }
+}
+
+/// Shows the generating state.
+///
+/// `startQuiz()` always calls the language model — questions are not cached the
+/// way flashcards are — and a preview cannot run it, so this settles on the
+/// generating or error screen rather than the question UI.
+#Preview {
+    // No `.modelContainer` needed: the deck is passed in directly and the
+    // view reads nothing else from the store.
+    QuizView(deck: PreviewSamples.deck)
 }

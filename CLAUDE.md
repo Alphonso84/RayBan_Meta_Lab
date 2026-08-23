@@ -390,6 +390,29 @@ model variant and tokenizer, which vary between devices on the same OS.
 
 Tests must stay free of model inference, network, and glasses hardware.
 
+## Previews
+
+Every file in `Views/` has at least one `#Preview`. Shared fixtures live in
+`Views/PreviewSamples.swift` (`#if DEBUG`, so none of it ships):
+
+| Fixture | Use |
+|---------|-----|
+| `PreviewSamples.container` | In-memory store seeded with 3 decks / 5 cards — attach with `.modelContainer(PreviewSamples.container)` |
+| `PreviewSamples.deck` / `.card` | A populated deck and one of its cards |
+| `PreviewSamples.flashcards` / `.quizQuestions` / `.quizResult(correct:)` | Study-mode content |
+| `PreviewSamples.pdfURL` | A real 3-page PDF on disk for the import flow |
+| `PreviewSamples.scannedBook` / `.documentBoundary` | Scanning fixtures |
+
+Two views cannot show their happy path in a preview, by nature rather than
+oversight: `QuizView` always calls the model (questions aren't cached the way
+flashcards are), so it settles on the generating state; `PhoneCameraPreviewLayer`
+renders black because previews have no camera. Both are labelled as such.
+
+The sample deck ships with **cached flashcards** so `FlashcardView` loads from
+cache rather than waiting on a model the canvas can't run. `PreviewSamplesTests`
+guards the fixtures themselves — a preview that compiles can still crash the
+canvas, and that isn't caught by a build.
+
 ## Reference Docs
 
 | File | Read it before |

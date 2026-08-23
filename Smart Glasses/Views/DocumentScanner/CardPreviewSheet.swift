@@ -347,5 +347,6 @@ struct CardPreviewSheet: View {
         onSave: { _ in },
         onDiscard: {}
     )
-    .modelContainer(for: [SummaryCard.self, SummaryDeck.self], inMemory: true)
+    // Seeded so the deck picker has decks to offer.
+    .modelContainer(PreviewSamples.container)
 }

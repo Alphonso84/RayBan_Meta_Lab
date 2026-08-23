@@ -410,3 +410,22 @@ struct PDFImportView: View {
         }
     }
 }
+
+#Preview("Into a deck") {
+    PDFImportView(
+        pdfURL: PreviewSamples.pdfURL,
+        targetDeck: PreviewSamples.deck,
+        onComplete: nil
+    )
+    .modelContainer(PreviewSamples.container)
+}
+
+#Preview("New deck") {
+    // No target deck: the import creates one named after the PDF.
+    PDFImportView(
+        pdfURL: PreviewSamples.pdfURL,
+        targetDeck: nil,
+        onComplete: nil
+    )
+    .modelContainer(PreviewSamples.container)
+}

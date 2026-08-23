@@ -722,5 +722,24 @@ struct ShareSheet: UIViewControllerRepresentable {
 
 #Preview {
     DeckLibraryView()
+        .modelContainer(PreviewSamples.container)
+}
+
+#Preview("Empty library") {
+    DeckLibraryView()
         .modelContainer(for: [SummaryCard.self, SummaryDeck.self], inMemory: true)
+}
+
+#Preview("Stat box") {
+    HStack(spacing: 12) {
+        StatBox(value: "4", label: "Decks", icon: "rectangle.stack.fill", color: .blue)
+        StatBox(value: "27", label: "Cards", icon: "doc.text.fill", color: .green)
+        StatBox(value: "3", label: "Unsorted", icon: "tray.fill", color: .orange)
+    }
+    .padding()
+}
+
+#Preview("Mini card") {
+    MiniCardView(card: PreviewSamples.card)
+        .modelContainer(PreviewSamples.container)
 }

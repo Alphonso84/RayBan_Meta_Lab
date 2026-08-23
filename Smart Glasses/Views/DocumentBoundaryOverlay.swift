@@ -174,3 +174,41 @@ struct StabilityIndicator: View {
         )
     }
 }
+
+#Preview("Stability indicator") {
+    HStack(spacing: 32) {
+        StabilityIndicator(progress: 0.0, isStable: false)
+        StabilityIndicator(progress: 0.55, isStable: false)
+        StabilityIndicator(progress: 1.0, isStable: true)
+    }
+    .padding()
+    .background(.black)
+}
+
+#Preview("No document") {
+    ZStack {
+        Color.black
+
+        DocumentBoundaryOverlay(
+            boundary: nil,
+            stabilityProgress: 0,
+            isStable: false,
+            statusText: "Point at a document",
+            frameSize: CGSize(width: 390, height: 844)
+        )
+    }
+}
+
+#Preview("Ready to capture") {
+    ZStack {
+        Color.black
+
+        DocumentBoundaryOverlay(
+            boundary: PreviewSamples.documentBoundary,
+            stabilityProgress: 1.0,
+            isStable: true,
+            statusText: "Captured",
+            frameSize: CGSize(width: 390, height: 844)
+        )
+    }
+}
