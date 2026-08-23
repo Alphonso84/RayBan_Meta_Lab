@@ -360,8 +360,11 @@ struct LibraryScannerView: View {
 
     private var cameraPreview: some View {
         GeometryReader { geometry in
-            if manager.streamState == .streaming, let image = manager.latestFrameImage {
-                // Live feed from Smart Glasses
+            if let image = manager.latestFrameImage,
+               manager.streamState == .streaming || manager.shouldHoldLastFrame {
+                // Live feed from Smart Glasses — or the last frame held while the
+                // camera is rebuilt after a capture, which reads as a continuous
+                // preview instead of a stop and restart.
                 Image(uiImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
@@ -1168,6 +1171,7 @@ struct LibraryScannerView: View {
     private func addPageAndContinue() {
         processor.addPageToSession()
         showPageCapturedOptions = false
+        manager.resumeVideoIfStalled()
 
         // Re-enable auto-capture for next page
         if isAutoCaptureOn {
@@ -1207,6 +1211,7 @@ struct LibraryScannerView: View {
     private func cancelCurrentPage() {
         processor.latestResult = nil
         showPageCapturedOptions = false
+        manager.resumeVideoIfStalled()
 
         // Reset for next capture
         if isAutoCaptureOn {
@@ -1291,6 +1296,10 @@ struct LibraryScannerView: View {
         summarizer.reset()
         processor.reset()
         animationPhase = 0
+
+        // A still capture stops video on the glasses. Nothing needed the live
+        // preview while the summary was up, but scanning does.
+        manager.resumeVideoIfStalled()
 
         // Re-enable auto-capture if it was on
         if isAutoCaptureOn {

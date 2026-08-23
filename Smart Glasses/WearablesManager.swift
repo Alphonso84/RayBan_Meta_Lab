@@ -80,6 +80,16 @@ class WearablesManager: ObservableObject {
     /// that is still waiting for the device session to come up.
     private var startTask: Task<Void, Never>?
 
+    /// Set while the camera is being rebuilt after a still capture.
+    @Published private(set) var isRebuildingAfterCapture = false
+
+    private var rebuildHoldTimeout: Task<Void, Never>?
+
+    /// When the last frame arrived. Only used to tell "video is flowing" from
+    /// "video has stalled" — the stream's own state cannot, because it goes on
+    /// reporting `.streaming` after the glasses stop sending.
+    private var lastFrameAt: Date?
+
     /// Completion handler for photo capture
     private var photoCaptureCompletion: ((UIImage?) -> Void)?
 
@@ -239,9 +249,18 @@ class WearablesManager: ObservableObject {
 
     /// Video configuration for the live preview.
     ///
-    /// Explicitly the SDK default: OCR runs on the high-resolution still from
-    /// `capturePhoto`, not on these frames, so the preview only has to be good
-    /// enough for boundary detection and framing.
+    /// Deliberately the SDK default, which means the raw video codec.
+    ///
+    /// HEVC (`.hvc1`) was tried, on the theory that a different media pipeline
+    /// might survive a still capture where raw does not. It does not work here:
+    /// the frames are compressed, `VideoFrame.makeUIImage()` returns nil for
+    /// them, and the preview never receives an image at all — the stream reports
+    /// `.streaming` while the UI sits on "Waiting for video...". Using it would
+    /// mean decoding HEVC ourselves.
+    ///
+    /// OCR runs on the high-resolution still from `capturePhoto`, not on these
+    /// frames, so the preview only has to be good enough for boundary detection
+    /// and framing.
     private static let streamConfiguration = StreamConfiguration()
 
     /// Start streaming from Meta glasses.
@@ -304,9 +323,15 @@ class WearablesManager: ObservableObject {
             guard !Task.isCancelled else { return }
 
             // A session that streamed and then ended is not a failure — the
-            // glasses were simply taken off — so it reconnects at full speed.
+            // glasses were simply taken off, or a capture forced a rebuild — so
+            // it reconnects immediately rather than sitting through a backoff.
             if didStream {
                 consecutiveFailures = 0
+                // Report the reconnect rather than leaving the stream's final
+                // `.stopped`, which would offer a "Start Stream" button over a
+                // stream that is already coming back.
+                streamState = .waitingForDevice
+                continue
             } else {
                 consecutiveFailures += 1
                 // The SDK reports only "Device unavailable" for every refused
@@ -410,6 +435,7 @@ class WearablesManager: ObservableObject {
         self.stream = stream
 
         stateToken = stream.statePublisher.listen { [weak self] (state: StreamState) in
+            print("[WearablesManager] Stream state: \(state)")
             guard let self else { return }
             Task { @MainActor in
                 self.streamState = state
@@ -423,6 +449,14 @@ class WearablesManager: ObservableObject {
         frameToken = stream.videoFramePublisher.listen { [weak self] (frame: VideoFrame) in
             guard let self, let image = frame.makeUIImage() else { return }
             Task { @MainActor in
+                self.lastFrameAt = Date()
+
+                if self.isRebuildingAfterCapture {
+                    // Frames are back; stop holding and go live again.
+                    self.isRebuildingAfterCapture = false
+                    self.rebuildHoldTimeout?.cancel()
+                    self.rebuildHoldTimeout = nil
+                }
                 self.latestFrameImage = image
                 // Pass frame to document processor if scanning
                 self.documentReaderProcessor.updateFrame(image)
@@ -447,6 +481,7 @@ class WearablesManager: ObservableObject {
                     self.photoCaptureCompletion?(nil)
                     self.photoCaptureCompletion = nil
                 }
+
             }
         }
 
@@ -459,6 +494,9 @@ class WearablesManager: ObservableObject {
     func stopStream() {
         startTask?.cancel()
         startTask = nil
+        rebuildHoldTimeout?.cancel()
+        rebuildHoldTimeout = nil
+        isRebuildingAfterCapture = false
 
         teardownSession()
 
@@ -500,6 +538,58 @@ class WearablesManager: ObservableObject {
     }
 
     // MARK: - Photo Capture
+
+    /// Bring video back if it has stalled, doing nothing if it is still flowing.
+    ///
+    /// Taking a high-resolution photo can end video on the glasses without
+    /// either side noticing: `Stream.state` goes on reporting `.streaming` while
+    /// no frames arrive, so the live preview sits frozen on the last frame from
+    /// before the capture. Verified by frame counting — the count stops at the
+    /// capture and never advances again while the state publisher stays silent.
+    ///
+    /// Called when the user finishes with a capture rather than automatically
+    /// after one. Rebuilding straight away means doing it while the on-device
+    /// model is summarizing, competing with it for the CPU and the main actor,
+    /// and the preview is showing a summary at that point anyway. Waiting until
+    /// the user is back to scanning puts the work where it is actually needed.
+    func resumeVideoIfStalled() {
+        guard deviceSession != nil else { return }
+
+        // Frames arrive roughly every 40ms, so half a second of silence is
+        // unambiguous without being twitchy.
+        guard let lastFrameAt, Date().timeIntervalSince(lastFrameAt) > 0.5 else { return }
+
+        rebuildStalledCamera()
+    }
+
+    /// Rebuild the camera after video has stopped and will not come back.
+    ///
+    /// Restarting the stream in place does not work: a stopped `Stream` is
+    /// terminal in the same way a stopped `DeviceSession` is, and `stop()`
+    /// followed by `start()` reports `videoStreamingError` whether the two are
+    /// separated by a delay or sequenced on the state publisher. Both were tried
+    /// on device. Ending the session drops `runCameraSession()` out of its loop
+    /// and `openCameraSession()` builds a fresh session, camera and stream.
+    private func rebuildStalledCamera() {
+        guard deviceSession != nil else { return }
+
+        print("[WearablesManager] Video stalled; rebuilding camera")
+
+        // Hold the last frame rather than blacking out while this happens.
+        isRebuildingAfterCapture = true
+        rebuildHoldTimeout?.cancel()
+        rebuildHoldTimeout = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(8))
+            guard !Task.isCancelled else { return }
+
+            // Long past a normal rebuild. Whatever is on screen is stale, and
+            // showing it as though it were live would be a lie.
+            print("[WearablesManager] Rebuild took too long; releasing held frame")
+            self.isRebuildingAfterCapture = false
+        }
+
+        deviceSession?.stop()
+    }
 
     /// Capture a high-resolution still photo from the glasses
     /// - Parameter completion: Called with the captured image, or nil if capture failed
@@ -592,6 +682,17 @@ class WearablesManager: ObservableObject {
     func resetDocumentReader() {
         documentReaderProcessor.reset()
         latestDocumentResult = nil
+    }
+
+    /// Whether the preview should keep drawing the last frame it received.
+    ///
+    /// True only while the camera is being rebuilt after a still capture. The
+    /// gap is a couple of seconds, the summary is generating through it, and
+    /// blacking out would turn an invisible pause into a visible stop/restart.
+    /// Bounded by `rebuildHoldTimeout` so a stream that never comes back stops
+    /// masquerading as a live one.
+    var shouldHoldLastFrame: Bool {
+        isRebuildingAfterCapture && latestFrameImage != nil
     }
 
     /// Whether glasses are connected and streaming
