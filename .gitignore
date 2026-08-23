@@ -1,0 +1,24 @@
+# Xcode per-developer state.
+#
+# Breakpoints, find-navigator scopes, window layout, which schemes are visible
+# and in what order. It changes every time the project is opened and means
+# nothing to anyone else.
+#
+# Note this is xcuser-data, not xcshared-data: `xcshareddata/` stays tracked,
+# because Package.resolved and the shared scheme are meant to be in the repo.
+xcuserdata/
+*.xcuserstate
+
+# Build output
+DerivedData/
+build/
+.build/
+*.xcarchive
+
+# Swift Package Manager working files. Package.resolved is deliberately not
+# ignored — it pins the SDK version the project builds against.
+.swiftpm/
+Packages/
+
+# macOS
+.DS_Store
