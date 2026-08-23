@@ -81,7 +81,7 @@ class WearablesManager: ObservableObject {
     private var startTask: Task<Void, Never>?
 
     /// Set while the camera is being rebuilt after a still capture.
-    @Published private(set) var isRebuildingAfterCapture = false
+    @Published private(set) var isRebuildingCamera = false
 
     private var rebuildHoldTimeout: Task<Void, Never>?
 
@@ -247,21 +247,71 @@ class WearablesManager: ObservableObject {
 
     // MARK: - Streaming
 
+    /// What the live preview is being used for, which decides how much
+    /// bandwidth it is worth.
+    enum PreviewQuality {
+        /// The preview is a viewfinder. A still is captured for the real work,
+        /// so it only has to be good enough to frame a page and find its edges.
+        case framing
+
+        /// The preview *is* the data — barcode mode reads codes straight from
+        /// these frames and never captures a still, so detail matters.
+        case detail
+    }
+
+    @Published private(set) var previewQuality: PreviewQuality = .framing
+
     /// Video configuration for the live preview.
     ///
-    /// Deliberately the SDK default, which means the raw video codec.
+    /// Resolution is the whole reason this is not a constant. Taking a still
+    /// while streaming at `.medium` ends video on the glasses and it never comes
+    /// back — measured on device, frames stop at the capture while `Stream.state`
+    /// goes on reporting `.streaming`. At `.low` it does not happen at all.
     ///
-    /// HEVC (`.hvc1`) was tried, on the theory that a different media pipeline
-    /// might survive a still capture where raw does not. It does not work here:
-    /// the frames are compressed, `VideoFrame.makeUIImage()` returns nil for
-    /// them, and the preview never receives an image at all — the stream reports
-    /// `.streaming` while the UI sits on "Waiting for video...". Using it would
-    /// mean decoding HEVC ourselves.
+    /// The likely mechanism is bandwidth arbitration: MWDATCore runs a
+    /// multi-transport link-lease layer (`_highLinkLeases` / `_mediumLinkLeases`
+    /// / `_lowLinkLeases`, `AutomaticLinkSwitcher`, "No more lease left.
+    /// Disconnecting BTC.") added with the Wi-Fi transport in SDK 0.8.0. A photo
+    /// transfer appears to force a renegotiation that drops the video link, and
+    /// only at low bitrate is there enough headroom to avoid it. Meta's own
+    /// CameraAccess sample streams at `.low`, which is presumably why it never
+    /// trips over this.
     ///
-    /// OCR runs on the high-resolution still from `capturePhoto`, not on these
-    /// frames, so the preview only has to be good enough for boundary detection
-    /// and framing.
-    private static let streamConfiguration = StreamConfiguration()
+    /// The codec is deliberately raw. HEVC (`.hvc1`) was tried, on the theory
+    /// that a different media pipeline might survive a capture: it does not work
+    /// here, because the frames are compressed, `VideoFrame.makeUIImage()`
+    /// returns nil for them, and the preview receives no image at all while the
+    /// stream reports `.streaming`. Meta's sample uses `.hvc1` and ships its own
+    /// `VideoFrameDecoder` for exactly this reason.
+    private var streamConfiguration: StreamConfiguration {
+        StreamConfiguration(
+            videoCodec: .raw,
+            resolution: previewQuality == .detail ? .medium : .low,
+            frameRate: 24
+        )
+    }
+
+    /// Match preview quality to what a capture mode needs.
+    ///
+    /// Only barcode mode reads the preview itself; the others capture a still,
+    /// and at anything above `.low` that capture kills video. So the modes that
+    /// capture cannot afford detail, and the mode that needs detail never
+    /// captures.
+    func matchPreviewQuality(to mode: CaptureMode) {
+        setPreviewQuality(mode == .barcode ? .detail : .framing)
+    }
+
+    private func setPreviewQuality(_ quality: PreviewQuality) {
+        guard quality != previewQuality else { return }
+        previewQuality = quality
+
+        // Configuration is fixed when the camera is added, so a change only
+        // takes effect on a new one.
+        guard deviceSession != nil else { return }
+
+        print("[WearablesManager] Preview quality changed; rebuilding camera")
+        rebuildCameraHoldingLastFrame()
+    }
 
     /// Start streaming from Meta glasses.
     ///
@@ -419,7 +469,7 @@ class WearablesManager: ObservableObject {
     private func attachCamera(to session: DeviceSession) -> Bool {
         let camera: Camera
         do {
-            guard let attached = try session.addCamera(config: Self.streamConfiguration) else {
+            guard let attached = try session.addCamera(config: streamConfiguration) else {
                 print("[WearablesManager] Camera unavailable on this device")
                 return false
             }
@@ -433,6 +483,9 @@ class WearablesManager: ObservableObject {
         self.camera = camera
         let stream = camera.stream
         self.stream = stream
+
+        let active = stream.streamConfiguration
+        print("[WearablesManager] Streaming \(active.resolution) \(active.resolution.videoFrameSize) at \(active.frameRate)fps")
 
         stateToken = stream.statePublisher.listen { [weak self] (state: StreamState) in
             print("[WearablesManager] Stream state: \(state)")
@@ -451,9 +504,9 @@ class WearablesManager: ObservableObject {
             Task { @MainActor in
                 self.lastFrameAt = Date()
 
-                if self.isRebuildingAfterCapture {
+                if self.isRebuildingCamera {
                     // Frames are back; stop holding and go live again.
-                    self.isRebuildingAfterCapture = false
+                    self.isRebuildingCamera = false
                     self.rebuildHoldTimeout?.cancel()
                     self.rebuildHoldTimeout = nil
                 }
@@ -496,7 +549,7 @@ class WearablesManager: ObservableObject {
         startTask = nil
         rebuildHoldTimeout?.cancel()
         rebuildHoldTimeout = nil
-        isRebuildingAfterCapture = false
+        isRebuildingCamera = false
 
         teardownSession()
 
@@ -559,24 +612,32 @@ class WearablesManager: ObservableObject {
         // unambiguous without being twitchy.
         guard let lastFrameAt, Date().timeIntervalSince(lastFrameAt) > 0.5 else { return }
 
-        rebuildStalledCamera()
+        rebuildCameraHoldingLastFrame()
     }
 
-    /// Rebuild the camera after video has stopped and will not come back.
+    /// Rebuild the camera, holding the last frame so the preview does not blink.
     ///
-    /// Restarting the stream in place does not work: a stopped `Stream` is
-    /// terminal in the same way a stopped `DeviceSession` is, and `stop()`
-    /// followed by `start()` reports `videoStreamingError` whether the two are
-    /// separated by a delay or sequenced on the state publisher. Both were tried
-    /// on device. Ending the session drops `runCameraSession()` out of its loop
-    /// and `openCameraSession()` builds a fresh session, camera and stream.
-    private func rebuildStalledCamera() {
+    /// Used both to recover stalled video and to apply a new
+    /// `PreviewQuality`, since configuration is fixed when a camera is added.
+    ///
+    /// The stream cannot be restarted in place. A stopped `Stream` is terminal
+    /// in the same way a stopped `DeviceSession` is, and `stop()` followed by
+    /// `start()` reports `videoStreamingError` whether the two are separated by
+    /// a delay or sequenced on the state publisher. Both were tried on device.
+    /// Ending the session drops `runCameraSession()` out of its loop and
+    /// `openCameraSession()` builds a fresh session, camera and stream.
+    ///
+    /// Re-attaching just the camera — `camera.stop()`, wait for the stream to
+    /// reach `.stopped`, then `session.addCamera()` again, keeping the session
+    /// connected — looks like the cheaper option and is what Meta's CameraAccess
+    /// sample does. It was tried here and measured *slower* on device than
+    /// rebuilding the session outright, so this deliberately does the seemingly
+    /// heavier thing.
+    private func rebuildCameraHoldingLastFrame() {
         guard deviceSession != nil else { return }
 
-        print("[WearablesManager] Video stalled; rebuilding camera")
-
         // Hold the last frame rather than blacking out while this happens.
-        isRebuildingAfterCapture = true
+        isRebuildingCamera = true
         rebuildHoldTimeout?.cancel()
         rebuildHoldTimeout = Task { @MainActor in
             try? await Task.sleep(for: .seconds(8))
@@ -585,7 +646,7 @@ class WearablesManager: ObservableObject {
             // Long past a normal rebuild. Whatever is on screen is stale, and
             // showing it as though it were live would be a lie.
             print("[WearablesManager] Rebuild took too long; releasing held frame")
-            self.isRebuildingAfterCapture = false
+            self.isRebuildingCamera = false
         }
 
         deviceSession?.stop()
@@ -692,7 +753,7 @@ class WearablesManager: ObservableObject {
     /// Bounded by `rebuildHoldTimeout` so a stream that never comes back stops
     /// masquerading as a live one.
     var shouldHoldLastFrame: Bool {
-        isRebuildingAfterCapture && latestFrameImage != nil
+        isRebuildingCamera && latestFrameImage != nil
     }
 
     /// Whether glasses are connected and streaming

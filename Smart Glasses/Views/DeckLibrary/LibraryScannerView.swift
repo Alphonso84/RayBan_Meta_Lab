@@ -78,6 +78,10 @@ struct LibraryScannerView: View {
                     .padding(.horizontal, 16)
                     .padding(.top, 8)
                     .onChange(of: captureModeRaw) { _, _ in
+                        // Barcode mode reads the preview itself and needs the
+                        // detail; the others capture a still and cannot afford
+                        // the bandwidth.
+                        manager.matchPreviewQuality(to: captureMode)
                         handleCaptureModeChange()
                     }
 
@@ -243,6 +247,7 @@ struct LibraryScannerView: View {
             }
             .onAppear {
                 // Stream lifecycle is managed by MainTabView - don't start here
+                manager.matchPreviewQuality(to: captureMode)
                 configureProcessorForDistanceMode()
                 if isAutoCaptureOn {
                     processor.startAutoCapture()
