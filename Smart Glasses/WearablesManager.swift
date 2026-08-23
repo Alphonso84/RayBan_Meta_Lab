@@ -20,9 +20,25 @@ class WearablesManager: ObservableObject {
 
     // MARK: - Published Properties
 
-    @Published var registrationStateDescription: String = "Unknown"
+    /// Live registration state, kept in sync by `registrationStateStream()`.
+    /// Prefer this (or `isRegistered`) over string-matching `registrationStateDescription`.
+    @Published private(set) var registrationState: RegistrationState = .unavailable
+    @Published private(set) var registrationStateDescription: String = "Unknown"
+
+    /// Last registration/unregistration failure, if any. Cleared once the SDK
+    /// reports a new state, since the stream is the source of truth.
+    @Published var registrationErrorMessage: String? = nil
+
     @Published var cameraStatus: String? = nil
-    @Published var streamState: StreamSessionState = .stopped
+
+    /// Whether the glasses camera permission is blocking streaming.
+    ///
+    /// Without this the app retries a refused session forever and shows only
+    /// "Waiting for glasses", which is what made a revoked permission take an
+    /// afternoon to identify — the SDK reports every refusal as the same
+    /// opaque "Device unavailable".
+    @Published private(set) var needsCameraPermission: Bool = false
+    @Published var streamState: StreamState = .stopped
     @Published var latestFrameImage: UIImage? = nil
     @Published var deviceStatus: String = "No device"
 
@@ -43,13 +59,26 @@ class WearablesManager: ObservableObject {
 
     // MARK: - Private Properties
 
-    private var registrationTask: Task<Void, Never>?
-    private var frameToken: AnyListenerToken?
-    private var stateToken: AnyListenerToken?
-    private var errorToken: AnyListenerToken?
-    private var photoToken: AnyListenerToken?
+    private var registrationObservationTask: Task<Void, Never>?
+    private var frameToken: (any AnyListenerToken)?
+    private var stateToken: (any AnyListenerToken)?
+    private var errorToken: (any AnyListenerToken)?
+    private var photoToken: (any AnyListenerToken)?
+    private var sessionErrorToken: (any AnyListenerToken)?
     private let deviceSelector: AutoDeviceSelector
-    private var streamSession: StreamSession?
+
+    /// The device session, the camera capability it owns, and that camera's stream.
+    ///
+    /// Since SDK 0.9.0 these are three separate objects with a strict ordering:
+    /// the session must reach `.started` before a camera can be added, and the
+    /// camera owns the stream. Stopping the camera cascades to the stream.
+    private var deviceSession: DeviceSession?
+    private var camera: Camera?
+    private var stream: MWDATCamera.Stream?
+
+    /// Tracks the in-flight `startStream()` so `stopStream()` can cancel a start
+    /// that is still waiting for the device session to come up.
+    private var startTask: Task<Void, Never>?
 
     /// Completion handler for photo capture
     private var photoCaptureCompletion: ((UIImage?) -> Void)?
@@ -60,9 +89,39 @@ class WearablesManager: ObservableObject {
     private init() {
         deviceSelector = AutoDeviceSelector(wearables: Wearables.shared)
         setupDocumentReaderSubscriptions()
-        Task {
-            await refreshRegistrationState()
-            await monitorDevices()
+        refreshRegistrationState()
+        observeRegistrationState()
+        // monitorDevices() never returns, so it gets its own task.
+        Task { await monitorDevices() }
+    }
+
+    /// Registration completes asynchronously — the user approves in the Meta AI app and
+    /// the result arrives later via `handleUrl`. Observe the stream so state stays live
+    /// instead of only being sampled right after `startRegistration()` returns.
+    private func observeRegistrationState() {
+        registrationObservationTask?.cancel()
+        registrationObservationTask = Task { [weak self] in
+            for await state in Wearables.shared.registrationStateStream() {
+                guard let self = self else { return }
+                self.apply(registrationState: state)
+                if state == .registered {
+                    self.registrationErrorMessage = nil
+                }
+            }
+        }
+    }
+
+    private func apply(registrationState state: RegistrationState) {
+        registrationState = state
+        registrationStateDescription = Self.describe(state)
+    }
+
+    private static func describe(_ state: RegistrationState) -> String {
+        switch state {
+        case .unavailable: return "Unavailable"
+        case .available: return "Available (Not Registered)"
+        case .registering: return "Registering..."
+        case .registered: return "Registered"
         }
     }
 
@@ -89,70 +148,107 @@ class WearablesManager: ObservableObject {
 
     // MARK: - Registration
 
+    /// Launches the Meta AI approval flow. This returns as soon as Meta AI is opened —
+    /// the actual state change arrives later on the registration stream, so don't
+    /// sample `registrationState` immediately after calling this.
+    ///
+    /// The SDK call is `async`, but this stays synchronous so the SwiftUI button
+    /// actions that call it are unchanged — the real state change arrives on the
+    /// registration stream regardless of when this returns.
     func startRegistration() {
-        registrationTask?.cancel()
-        registrationTask = Task {
+        registrationErrorMessage = nil
+        Task {
             do {
                 try await Wearables.shared.startRegistration()
-                await refreshRegistrationState()
             } catch {
-                registrationStateDescription = "Registration failed: \(error.localizedDescription)"
+                registrationErrorMessage = "Registration failed: \(error)"
             }
+            refreshRegistrationState()
         }
     }
 
     func startUnregistration() {
-        registrationTask?.cancel()
-        registrationTask = Task {
+        registrationErrorMessage = nil
+        Task {
             do {
                 try await Wearables.shared.startUnregistration()
-                await refreshRegistrationState()
             } catch {
-                registrationStateDescription = "Unregistration failed: \(error.localizedDescription)"
+                registrationErrorMessage = "Unregistration failed: \(error)"
             }
+            refreshRegistrationState()
         }
     }
 
-    func refreshRegistrationState() async {
-        let state = Wearables.shared.registrationState
-        switch state {
-        case .unavailable:
-            registrationStateDescription = "Unavailable"
-        case .available:
-            registrationStateDescription = "Available (Not Registered)"
-        case .registering:
-            registrationStateDescription = "Registering..."
-        case .registered:
-            registrationStateDescription = "Registered"
-        @unknown default:
-            registrationStateDescription = "Unknown state"
-        }
+    /// Re-syncs from the SDK's current value. The stream in `observeRegistrationState()`
+    /// keeps this current; this exists for views that want an explicit refresh on appear.
+    func refreshRegistrationState() {
+        apply(registrationState: Wearables.shared.registrationState)
+    }
+
+    /// Whether the app is registered with Meta AI.
+    var isRegistered: Bool {
+        registrationState == .registered
     }
 
     // MARK: - Camera Permissions
 
-    func refreshCameraPermissionStatus() async {
+    @discardableResult
+    func refreshCameraPermissionStatus() async -> Bool {
         do {
             let status = try await Wearables.shared.checkPermissionStatus(.camera)
-            cameraStatus = String(describing: status)
+            apply(permissionStatus: status)
+            return status == .granted
         } catch {
             cameraStatus = "Error: \(error.localizedDescription)"
             print("Failed to get camera status \(error)")
+            return false
         }
     }
 
-    func requestCameraPermission() async {
+    @discardableResult
+    func requestCameraPermission() async -> Bool {
         do {
             let status = try await Wearables.shared.requestPermission(.camera)
-            cameraStatus = String(describing: status)
+            apply(permissionStatus: status)
+            return status == .granted
         } catch {
             print("Failed to request camera permission: \(error)")
+            return false
         }
+    }
+
+    private func apply(permissionStatus status: PermissionStatus) {
+        cameraStatus = String(describing: status)
+        needsCameraPermission = status != .granted
+    }
+
+    /// Whether a refused permission should stop us attempting a session.
+    ///
+    /// Only a definitive answer blocks the attempt. Failing to *read* the
+    /// status is not proof of denial, and trying anyway produces a better
+    /// diagnosis than refusing to try.
+    private func cameraPermissionBlocksStreaming() async -> Bool {
+        guard let status = try? await Wearables.shared.checkPermissionStatus(.camera) else {
+            return false
+        }
+        apply(permissionStatus: status)
+        return status != .granted
     }
 
     // MARK: - Streaming
 
-    /// Start streaming from Meta glasses
+    /// Video configuration for the live preview.
+    ///
+    /// Explicitly the SDK default: OCR runs on the high-resolution still from
+    /// `capturePhoto`, not on these frames, so the preview only has to be good
+    /// enough for boundary detection and framing.
+    private static let streamConfiguration = StreamConfiguration()
+
+    /// Start streaming from Meta glasses.
+    ///
+    /// Stays synchronous for its callers, but the work behind it is not: since
+    /// SDK 0.9.0 the device session has to reach `.started` before a camera can
+    /// be added, so the handshake runs in `startTask`.
     func startStream() {
         stopStream()
 
@@ -160,34 +256,182 @@ class WearablesManager: ObservableObject {
         print("[WearablesManager] Registration state: \(registrationStateDescription)")
         print("[WearablesManager] Device status: \(deviceStatus)")
 
-        let session = StreamSession(deviceSelector: deviceSelector)
-        streamSession = session
+        // No `Stream` exists yet, but the UI is already waiting on the glasses —
+        // report that rather than leaving the state at `.stopped`.
+        streamState = .waitingForDevice
 
-        stateToken = session.statePublisher.listen { [weak self] (state: StreamSessionState) in
-            guard let self = self else { return }
+        startTask = Task { [weak self] in
+            await self?.openCameraSession()
+        }
+    }
+
+    /// How long to wait before rebuilding a device session that would not start.
+    ///
+    /// Indexed by consecutive failures, so a momentary miss retries almost at
+    /// once while genuinely absent glasses settle into a slow poll.
+    private static let retryDelays: [Duration] = [.seconds(1), .seconds(2), .seconds(3), .seconds(5)]
+
+    /// Keep a camera session up for as long as the caller wants one.
+    ///
+    /// A device session is single-use: once it reaches `.stopped` it is terminal
+    /// and a new one has to be built. It also routinely fails to start for
+    /// transient reasons — entering the Scan tab while the glasses are still
+    /// completing their accessory handshake reports "Device unavailable" — and
+    /// the glasses can drop out later by being doffed or folded.
+    ///
+    /// So this retries rather than attempting once. The previous SDK's
+    /// `StreamSession` absorbed all of this internally; the explicit `Camera`
+    /// lifecycle does not, and a single attempt leaves the tab dead until the
+    /// user navigates away and back.
+    ///
+    /// The loop lives as long as `startTask`, which `stopStream()` cancels, so
+    /// it only ever runs while something actually wants the camera.
+    private func openCameraSession() async {
+        var consecutiveFailures = 0
+
+
+        while !Task.isCancelled {
+            // Re-checked every pass so that granting permission from the banner
+            // this raises recovers on its own, with no need to leave the tab.
+            if await cameraPermissionBlocksStreaming() {
+                streamState = .stopped
+                try? await Task.sleep(for: .seconds(2))
+                continue
+            }
+
+            let didStream = await runCameraSession()
+
+            guard !Task.isCancelled else { return }
+
+            // A session that streamed and then ended is not a failure — the
+            // glasses were simply taken off — so it reconnects at full speed.
+            if didStream {
+                consecutiveFailures = 0
+            } else {
+                consecutiveFailures += 1
+                // The SDK reports only "Device unavailable" for every refused
+                // start, so on the first failure dump the things it *will*
+                // answer. Camera permission and device compatibility are both
+                // invisible otherwise: registration, connection and link state
+                // all keep reporting healthy while the session refuses.
+                if consecutiveFailures == 1 {
+                    await logStartDiagnostics()
+                }
+            }
+
+            streamState = .waitingForDevice
+
+            let index = min(max(consecutiveFailures - 1, 0), Self.retryDelays.count - 1)
+            try? await Task.sleep(for: Self.retryDelays[index])
+        }
+    }
+
+    /// Everything the SDK will tell us about why a session would not start.
+    private func logStartDiagnostics() async {
+        await refreshCameraPermissionStatus()
+        print("[WearablesManager] Camera permission: \(cameraStatus ?? "unknown")")
+
+        guard let id = deviceSelector.activeDevice else {
+            print("[WearablesManager] No device selected")
+            return
+        }
+        guard let device = Wearables.shared.deviceForIdentifier(id) else {
+            print("[WearablesManager] Selected device \(id) could not be resolved")
+            return
+        }
+
+        print("""
+        [WearablesManager] Device \(device.nameOrId()) \
+        type=\(device.deviceType().rawValue) \
+        link=\(device.linkState) \
+        compatibility=\(device.compatibility().displayString) \
+        supportsDisplay=\(device.supportsDisplay())
+        """)
+    }
+
+    /// Build one device session and run it until it ends.
+    ///
+    /// - Returns: whether the camera was actually attached, which distinguishes
+    ///   "the glasses were not there" from "the glasses went away again".
+    private func runCameraSession() async -> Bool {
+        let session: DeviceSession
+        do {
+            session = try Wearables.shared.createSession(deviceSelector: deviceSelector)
+            try session.start()
+        } catch {
+            print("[WearablesManager] Could not start device session: \(error)")
+            deviceStatus = error.description
+            return false
+        }
+
+        deviceSession = session
+
+        sessionErrorToken = session.errorPublisher.listen { (error: DeviceSessionError) in
+            // Thermal, battery and required-update conditions arrive here, and
+            // they are usually the real reason a session stops.
+            print("[WearablesManager] Device session error: \(error)")
+        }
+
+        var didAttach = false
+
+        // One pass over the session's lifetime: attach the camera when it comes
+        // up, and fall out when it ends. The stream finishes on `.stopped`, so
+        // this cannot outlive the session it is watching.
+        for await state in session.stateStream() {
+            if Task.isCancelled { break }
+
+            if state == .started, !didAttach {
+                didAttach = attachCamera(to: session)
+                if !didAttach { break }
+            }
+        }
+
+        teardownSession()
+        return didAttach
+    }
+
+    /// Add the camera capability to a started session and begin streaming.
+    private func attachCamera(to session: DeviceSession) -> Bool {
+        let camera: Camera
+        do {
+            guard let attached = try session.addCamera(config: Self.streamConfiguration) else {
+                print("[WearablesManager] Camera unavailable on this device")
+                return false
+            }
+            camera = attached
+        } catch {
+            print("[WearablesManager] Could not add camera: \(error)")
+            deviceStatus = error.description
+            return false
+        }
+
+        self.camera = camera
+        let stream = camera.stream
+        self.stream = stream
+
+        stateToken = stream.statePublisher.listen { [weak self] (state: StreamState) in
+            guard let self else { return }
             Task { @MainActor in
                 self.streamState = state
             }
         }
 
-        errorToken = session.errorPublisher.listen { (error: StreamSessionError) in
+        errorToken = stream.errorPublisher.listen { (error: StreamError) in
             print("[WearablesManager] Stream error: \(error)")
         }
 
-        frameToken = session.videoFramePublisher.listen { [weak self] (frame: VideoFrame) in
-            guard let self = self else { return }
+        frameToken = stream.videoFramePublisher.listen { [weak self] (frame: VideoFrame) in
+            guard let self, let image = frame.makeUIImage() else { return }
             Task { @MainActor in
-                self.latestFrameImage = frame.makeUIImage()
+                self.latestFrameImage = image
                 // Pass frame to document processor if scanning
-                if let frameImage = self.latestFrameImage {
-                    self.documentReaderProcessor.updateFrame(frameImage)
-                }
+                self.documentReaderProcessor.updateFrame(image)
             }
         }
 
         // Listen for photo captures (high resolution still images)
-        photoToken = session.photoDataPublisher.listen { [weak self] photoData in
-            guard let self = self else { return }
+        photoToken = stream.photoDataPublisher.listen { [weak self] (photoData: PhotoData) in
+            guard let self else { return }
             Task { @MainActor in
                 let image = UIImage(data: photoData.data)
                 self.capturedPhoto = image
@@ -206,34 +450,18 @@ class WearablesManager: ObservableObject {
             }
         }
 
-        Task {
-            await session.start()
-        }
+        stream.start()
+        print("[WearablesManager] Camera attached, stream started")
+        return true
     }
 
     /// Stop streaming
     func stopStream() {
-        guard streamSession != nil else { return }
+        startTask?.cancel()
+        startTask = nil
 
-        let session = streamSession
-        let frame = frameToken
-        let state = stateToken
-        let error = errorToken
-        let photo = photoToken
+        teardownSession()
 
-        Task {
-            await frame?.cancel()
-            await state?.cancel()
-            await error?.cancel()
-            await photo?.cancel()
-            await session?.stop()
-        }
-
-        frameToken = nil
-        stateToken = nil
-        errorToken = nil
-        photoToken = nil
-        streamSession = nil
         streamState = .stopped
         latestFrameImage = nil
         capturedPhoto = nil
@@ -242,19 +470,49 @@ class WearablesManager: ObservableObject {
         documentReaderProcessor.reset()
     }
 
+    /// Release the camera and device session and drop every listener.
+    ///
+    /// The camera is stopped first and synchronously: that halts delivery at the
+    /// source, so no frame can land after the published state has been cleared.
+    /// Token cancellation is `async` and only tidies up afterwards.
+    private func teardownSession() {
+        camera?.stop()      // cascades to the stream it owns
+        deviceSession?.stop()
+
+        let tokens = [frameToken, stateToken, errorToken, photoToken, sessionErrorToken]
+            .compactMap { $0 }
+
+        stream = nil
+        camera = nil
+        deviceSession = nil
+        frameToken = nil
+        stateToken = nil
+        errorToken = nil
+        photoToken = nil
+        sessionErrorToken = nil
+
+        guard !tokens.isEmpty else { return }
+        Task {
+            for token in tokens {
+                await token.cancel()
+            }
+        }
+    }
+
     // MARK: - Photo Capture
 
     /// Capture a high-resolution still photo from the glasses
     /// - Parameter completion: Called with the captured image, or nil if capture failed
     func capturePhoto(completion: @escaping (UIImage?) -> Void) {
-        guard let session = streamSession else {
-            print("[WearablesManager] No active stream session for photo capture")
+        guard let stream else {
+            print("[WearablesManager] No active stream for photo capture")
             completion(nil)
             return
         }
 
         guard !isCapturingPhoto else {
             print("[WearablesManager] Photo capture already in progress")
+            completion(nil)
             return
         }
 
@@ -262,7 +520,18 @@ class WearablesManager: ObservableObject {
         photoCaptureCompletion = completion
 
         print("[WearablesManager] Requesting photo capture...")
-        session.capturePhoto(format: .jpeg)
+
+        // `capturePhoto` returns false when the SDK rejects the request outright.
+        // No photoDataPublisher event follows, so the in-flight flag has to be
+        // released here — otherwise the `isCapturingPhoto` guard above blocks every
+        // subsequent capture for the life of the stream session.
+        guard stream.capturePhoto(format: .jpeg) else {
+            print("[WearablesManager] Photo capture request rejected by SDK")
+            isCapturingPhoto = false
+            photoCaptureCompletion = nil
+            completion(nil)
+            return
+        }
     }
 
     /// Capture a high-resolution photo and return it asynchronously.
@@ -294,8 +563,8 @@ class WearablesManager: ObservableObject {
     /// Capture a high-resolution photo and process it for document scanning
     /// This uses the photo capture API for much better OCR accuracy
     func captureDocumentPhoto() {
-        guard streamSession != nil else {
-            print("[WearablesManager] No active stream session")
+        guard stream != nil else {
+            print("[WearablesManager] No active stream")
             return
         }
 
